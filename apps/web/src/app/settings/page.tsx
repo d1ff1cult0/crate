@@ -7,29 +7,29 @@
  */
 
 import { prisma } from '@crate/db'
+import { Connections } from '../../components/connections'
 import { PathSettings } from '../../components/path-settings'
 import { HarvestPanel } from '../../components/harvest-panel'
-import { Badge, Panel, StatusDot } from '../../components/ui'
+import { Panel } from '../../components/ui'
 
 export const dynamic = 'force-dynamic'
 
-const PROVIDERS = [
-  { key: 'spotify', name: 'Spotify', note: 'Read-only. Expires when Premium lapses on 1 Sept 2026.' },
-  { key: 'navidrome', name: 'Navidrome', note: 'Where playlists are written. Required.' },
-  { key: 'lastfm', name: 'Last.fm', note: 'Similarity data for recommendations. Connect early — it accumulates.' },
-  { key: 'acoustid', name: 'AcoustID', note: 'Recovers ISRCs from fingerprints without using Spotify quota.' },
-  { key: 'lidarr', name: 'Lidarr', note: 'Optional downstream for full albums.' },
-  { key: 'ollama', name: 'Ollama', note: 'Local LLM for the curator module.' },
-]
-
-export default async function SettingsPage() {
-  const [settingRow, connections] = await Promise.all([
-    prisma.setting.findUnique({ where: { key: 'app' } }),
-    prisma.connection.findMany(),
-  ])
-
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ spotify?: string; as?: string; reason?: string }>
+}) {
+  const params = await searchParams
+  const settingRow = await prisma.setting.findUnique({ where: { key: 'app' } })
   const settings = (settingRow?.value ?? {}) as Record<string, unknown>
-  const byProvider = new Map(connections.map((c) => [c.provider, c]))
+
+  // Result of the OAuth round trip, passed back as query params by the callback.
+  const spotifyStatus =
+    params.spotify === 'connected'
+      ? { state: 'connected' as const, detail: `Spotify connected as ${params.as ?? 'your account'}.` }
+      : params.spotify === 'error'
+        ? { state: 'error' as const, detail: params.reason ?? 'Could not connect to Spotify.' }
+        : undefined
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 pb-20">
@@ -50,37 +50,10 @@ export default async function SettingsPage() {
         }
       />
 
-      <Panel title="Connections">
-        <ul className="divide-y divide-hairline">
-          {PROVIDERS.map((p) => {
-            const conn = byProvider.get(p.key)
-            return (
-              <li key={p.key} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <StatusDot
-                      tone={
-                        !conn ? 'idle' : !conn.enabled ? 'idle' : conn.lastError ? 'error' : 'ok'
-                      }
-                    />
-                    <span className="text-sm font-medium text-ink">{p.name}</span>
-                    {conn?.displayName && (
-                      <span className="data text-xs text-ink-muted">{conn.displayName}</span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 max-w-prose text-xs text-ink-muted">{p.note}</p>
-                  {conn?.lastError && (
-                    <p className="mt-1 max-w-prose text-xs text-error">{conn.lastError}</p>
-                  )}
-                </div>
-                <Badge tone={conn?.enabled ? 'ok' : 'idle'}>
-                  {conn?.enabled ? 'connected' : 'not connected'}
-                </Badge>
-              </li>
-            )
-          })}
-        </ul>
-      </Panel>
+      <Connections
+        spotifyClientId={String(settings.spotifyClientId ?? '')}
+        spotifyStatus={spotifyStatus}
+      />
 
       <Panel title="Spotify market">
         <p className="max-w-prose text-sm leading-relaxed text-ink">

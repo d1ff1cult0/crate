@@ -144,7 +144,7 @@ Appended as phases complete. A phase is "done" only against its `PROMPT.md` §10
 | Phase | Status | Notes |
 |---|---|---|
 | 1 — Foundations | **done** | Verified end to end against real Postgres/Redis: pages render, a job runs, progress streams over SSE. |
-| 1.5 — Harvest | **code complete, not yet run** | Orchestrator + rate limiter fully tested against a fake Spotify (34 tests). Needs a real Spotify app + OAuth consent to run for real — see "What's left" below. |
+| 1.5 — Harvest | **ready to run — needs your Spotify app** | Orchestrator + rate limiter tested against a fake Spotify (34 tests). OAuth flow and connections editor are now built and verified. The only remaining step is yours: create a Spotify app and click Connect. See "What's left" below. |
 | 2 — Library | **core done** | Scanner, ffprobe, audio-stream hashing, fpcalc fingerprinting and the AcoustID/MusicBrainz ISRC backfill all verified against real audio files. Library UI renders. |
 | 3 — Spotify + import + matching | partial | Matching cascade and importers built and tested; paste-box resolver and review queue working. Playlist/queue screens still empty states. |
 | 4–8 | not started | |
@@ -166,10 +166,21 @@ Found by running it, not by reading it. Every deterministic job ID in the codeba
 
 ### What's left before the harvest can actually run
 
-Phase 1.5 is code-complete but has never talked to Spotify. To run it the owner needs to:
+The OAuth flow and connections editor are built and verified. Everything that remains is on your side and takes about five minutes:
 
-1. Create a Spotify app at developer.spotify.com and put its client ID in Settings.
-2. Set the redirect URI to `<PUBLIC_URL>/api/spotify/callback`.
-3. Complete the OAuth consent flow (read-only scopes only, per D4).
+1. Create an app at **developer.spotify.com**.
+2. Add `<PUBLIC_URL>/api/spotify/callback` as a redirect URI — it must match exactly.
+3. Paste the client ID into **Settings → Spotify** and press **Connect Spotify**.
+4. Press **Harvest everything**.
 
-The OAuth callback route and the connections editor UI are the remaining gap between "tested against a fake Spotify" and "harvested". Given the 2026-09-01 deadline this is the highest-priority remaining work.
+Note that Development Mode requires the app owner to hold active Premium, so this has to happen before **2026-09-01**.
+
+**Verified about the OAuth flow** (against a real database, without completing a Spotify consent screen, which needs a real app):
+
+- Authorize redirects to `accounts.spotify.com` with PKCE `S256` and exactly the six read-only scopes — no write scopes, confirming D4.
+- PKCE verifier and state cookies are `HttpOnly`, `SameSite=Lax`, ten-minute expiry.
+- A forged `state` is rejected; a declined consent, a missing code and an expired verifier each redirect back to Settings with a specific readable reason.
+- Credentials are AES-256-GCM encrypted at rest — the plaintext AcoustID key appears nowhere in the database, and `GET /api/connections` returns only `hasSecret: true`, never the value.
+- Saving a connection verifies it immediately where that is cheap, so a typo surfaces at save time rather than inside a failed job three days later.
+
+The one path that genuinely cannot be tested without your app is the code-for-token exchange itself.

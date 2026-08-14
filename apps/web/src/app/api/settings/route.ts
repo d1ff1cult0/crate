@@ -9,6 +9,9 @@ const PatchSchema = z
       .array(z.object({ appPath: z.string(), navidromePath: z.string() }))
       .optional(),
     spotifyMarket: z.string().length(2).optional(),
+    // Not a secret — the client ID is public by design in a PKCE flow, so it lives in
+    // settings rather than in the encrypted Connection record.
+    spotifyClientId: z.string().max(128).optional(),
     isrcBackfillEnabled: z.boolean().optional(),
     matchAutoAcceptAt: z.number().min(0).max(1).optional(),
     matchReviewFloorAt: z.number().min(0).max(1).optional(),
