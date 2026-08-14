@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The worker is a plain Node process (run by tsx), not a bundled app. NodeNext is
+    // what actually matches its runtime, and it makes conditional exports resolve the
+    // way Node will resolve them — music-metadata exposes parseFile only under the
+    // "node" condition, which "Bundler" resolution silently misses.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

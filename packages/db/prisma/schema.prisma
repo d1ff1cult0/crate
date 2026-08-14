@@ -1,0 +1,514 @@
+// Crate — schema
+//
+// Derived from PROMPT.md §6, with the changes argued in docs/plan.md §2:
+//   - SourceTrack split into identity (SourceTrack) + membership (SourcePlaylistItem).
+//     A track in six playlists is ONE row matched ONCE, not six. See plan.md §2.1.
+//   - ArtistNode.normName indexed rather than unique (aggressive normalization collides).
+//   - Mix.slot uniqueness made explicit; generation history kept separately.
+//   - Added ImportRun, Connection (encrypted credentials), AppUser.
+//
+// Every decision that deviates from the brief is recorded in docs/DECISIONS.md.
+
+generator client {
+  provider = "prisma-client-js"
+  // Generated into the package rather than node_modules/.prisma. The default location
+  // is a directory with no package.json, which Node's NodeNext resolution cannot treat
+  // as a package — under that mode every model type silently degrades to `{}` and the
+  // enums vanish. The worker runs as a plain Node process, so it uses NodeNext.
+  output   = "../src/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum Source {
+  SPOTIFY
+  CSV
+  TEXT
+  GDPR_EXPORT
+  MANUAL
+  GENERATED
+}
+
+enum IsrcStatus {
+  PRESENT // arrived with an ISRC (playlist item or /me/tracks)
+  ABSENT // arrived without one (album track — SimplifiedTrackObject has no external_ids)
+  BACKFILL_QUEUED // queued for a GET /tracks/{id} to recover it
+  UNAVAILABLE // backfilled and Spotify still had none
+}
+
+enum MatchMethod {
+  ISRC
+  MBID
+  FINGERPRINT
+  EXACT_NORM
+  FUZZY
+  MANUAL
+  NONE
+}
+
+enum MatchStatus {
+  MATCHED
+  MISSING
+  NEEDS_REVIEW
+  REJECTED
+  DOWNLOADING
+}
+
+enum PlaylistKind {
+  IMPORTED
+  GENERATED_MIX
+  MANUAL
+}
+
+enum DownloadStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  ABANDONED
+  MANUAL_HOLD
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  PAUSED // e.g. Spotify returned QUOTA_EXCEEDED — see spotify-api-state.md finding C
+}
+
+enum ImportKind {
+  SPOTIFY_PLAYLIST
+  SPOTIFY_HARVEST
+  GDPR_EXPORT
+  CSV
+  TEXT
+}
+
+enum ImportStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  NOT_OWNED // resolver hit a playlist the user neither owns nor collaborates on
+}
+
+// ─────────────────────────────────────────────────────────────
+// Sources — anything describing music we want, wherever it came from
+// ─────────────────────────────────────────────────────────────
+
+model SourcePlaylist {
+  id           String    @id @default(cuid())
+  source       Source
+  externalId   String?
+  name         String
+  ownerName    String?
+  ownerId      String? // Spotify owner.id — still an `id`, not account_id
+  isOwned      Boolean   @default(true)
+  isCollaborative Boolean @default(false)
+  snapshotId   String? // skip re-sync when unchanged (see A11: weekly full re-read regardless)
+  imageUrl     String?
+  trackTotal   Int? // reported total, even when items are withheld
+  lastSyncedAt DateTime?
+  fullReadAt   DateTime? // last snapshot-independent full read
+  createdAt    DateTime  @default(now())
+
+  items      SourcePlaylistItem[]
+  playlist   Playlist?            @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+  playlistId String?              @unique
+
+  @@unique([source, externalId])
+  @@index([lastSyncedAt])
+}
+
+/// One row per distinct recording per source. Never per playlist appearance.
+model SourceTrack {
+  id         String  @id @default(cuid())
+  source     Source
+  externalId String? // Spotify track id, or a synthetic stable id for CSV/TEXT
+  title      String
+  artists    String[]
+  albumArtist String?
+  album      String?
+  durationMs Int?
+  isrc       String?
+  isrcStatus IsrcStatus @default(PRESENT)
+  spotifyId  String?
+  mbid       String?
+  year       Int?
+  firstSeenAt DateTime  @default(now())
+  rawJson    Json? // full upstream payload, kept forever
+
+  // computed on write, indexed — see packages/core/src/normalize.ts
+  normTitle  String
+  normArtist String
+
+  match       Match?
+  memberships SourcePlaylistItem[]
+  downloads   DownloadRequest[]
+  playlistItems PlaylistItem[]
+
+  @@unique([source, externalId])
+  @@index([isrc])
+  @@index([normArtist, normTitle])
+  @@index([spotifyId])
+  @@index([isrcStatus])
+}
+
+/// Membership of a SourceTrack in a SourcePlaylist, with its position.
+model SourcePlaylistItem {
+  id            String    @id @default(cuid())
+  playlistId    String
+  sourceTrackId String
+  position      Int
+  addedAt       DateTime?
+
+  playlist    SourcePlaylist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  sourceTrack SourceTrack    @relation(fields: [sourceTrackId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, position])
+  @@index([sourceTrackId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// The local library
+// ─────────────────────────────────────────────────────────────
+
+/// Canonical recording; may have several files.
+model LibraryTrack {
+  id          String  @id @default(cuid())
+  title       String
+  artist      String
+  albumArtist String?
+  album       String?
+  durationMs  Int?
+  isrc        String?
+  mbid        String?
+  acoustId    String?
+  normTitle   String
+  normArtist  String
+
+  // Derived cache of listening signal. Raw events live in ListeningEvent (which
+  // carries `source`); these are recomputed, not authoritative. See plan.md §2.2.
+  playCount    Int       @default(0)
+  lastPlayedAt DateTime?
+  starred      Boolean   @default(false)
+  affinity     Float     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  files         LibraryFile[]
+  matches       Match[]
+  playlistItems PlaylistItem[]
+
+  @@index([isrc])
+  @@index([mbid])
+  @@index([acoustId])
+  @@index([normArtist, normTitle])
+}
+
+model LibraryFile {
+  id             String   @id @default(cuid())
+  trackId        String?
+  path           String   @unique
+  format         String
+  bitrate        Int?
+  sampleRate     Int?
+  bitDepth       Int?
+  channels       Int?
+  sizeBytes      BigInt
+  durationMs     Int?
+  mtime          DateTime
+  contentHash    String? // hash of the AUDIO STREAM, not the container
+  fingerprint    String? // chromaprint
+  tagsJson       Json
+  qualityScore   Int      @default(0)
+  sourceProvider String?
+  missingSince   DateTime? // set when a scan no longer finds it; not deleted immediately
+  scannedAt      DateTime @default(now())
+
+  track   LibraryTrack?     @relation(fields: [trackId], references: [id], onDelete: SetNull)
+  dupes   DuplicateMember[]
+
+  @@index([contentHash])
+  @@index([fingerprint])
+  @@index([trackId])
+  @@index([missingSince])
+}
+
+model Match {
+  id             String      @id @default(cuid())
+  sourceTrackId  String      @unique
+  libraryTrackId String?
+  method         MatchMethod
+  confidence     Float
+  status         MatchStatus
+  detailJson     Json? // why this won — candidate scores, applied guard rails
+  reviewedAt     DateTime?
+  updatedAt      DateTime    @updatedAt
+
+  sourceTrack  SourceTrack   @relation(fields: [sourceTrackId], references: [id], onDelete: Cascade)
+  libraryTrack LibraryTrack? @relation(fields: [libraryTrackId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([confidence])
+  @@index([libraryTrackId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Playlists we own and write out
+// ─────────────────────────────────────────────────────────────
+
+model Playlist {
+  id            String       @id @default(cuid())
+  name          String
+  kind          PlaylistKind
+  description   String?
+  m3uPath       String?
+  subsonicId    String?
+  autoSync      Boolean      @default(true)
+  lastWrittenAt DateTime?
+  mixConfigJson Json?
+  createdAt     DateTime     @default(now())
+
+  items          PlaylistItem[]
+  sourcePlaylist SourcePlaylist?
+  mixes          Mix[]
+
+  @@index([kind])
+}
+
+model PlaylistItem {
+  id             String @id @default(cuid())
+  playlistId     String
+  position       Int
+  libraryTrackId String?
+  sourceTrackId  String? // kept even when unmatched, so gaps can be filled later
+
+  playlist     Playlist      @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  libraryTrack LibraryTrack? @relation(fields: [libraryTrackId], references: [id], onDelete: SetNull)
+  sourceTrack  SourceTrack?  @relation(fields: [sourceTrackId], references: [id], onDelete: SetNull)
+
+  // Reordering rewrites the whole item list inside one transaction — see plan.md §2.2.
+  @@unique([playlistId, position])
+  @@index([libraryTrackId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Acquisition
+// ─────────────────────────────────────────────────────────────
+
+model DownloadRequest {
+  id            String         @id @default(cuid())
+  sourceTrackId String
+  status        DownloadStatus @default(QUEUED)
+  priority      Int            @default(0)
+  resultFileId  String?
+  lastError     String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  sourceTrack SourceTrack       @relation(fields: [sourceTrackId], references: [id], onDelete: Cascade)
+  attempts    DownloadAttempt[]
+
+  @@index([status, priority])
+  @@index([sourceTrackId])
+}
+
+model DownloadAttempt {
+  id            String   @id @default(cuid())
+  requestId     String
+  provider      String
+  query         String
+  candidateJson Json? // what the provider offered, and why we picked it
+  outcome       String
+  detail        String?
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+
+  request DownloadRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  // Never re-run a provider that returned NO_RESULTS for the same query within 24h (§7.5)
+  @@index([provider, query, outcome, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Duplicates
+// ─────────────────────────────────────────────────────────────
+
+model DuplicateGroup {
+  id         String    @id @default(cuid())
+  reason     String // HASH | FINGERPRINT | ISRC | FUZZY | VARIANT
+  confidence Float
+  status     String    @default("OPEN")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  members DuplicateMember[]
+
+  @@index([status])
+}
+
+model DuplicateMember {
+  id       String  @id @default(cuid())
+  groupId  String
+  fileId   String
+  isKeeper Boolean @default(false)
+  action   String?
+
+  group DuplicateGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  file  LibraryFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, fileId])
+}
+
+/// One row per trash operation, so Undo can restore an entire batch (§7.7).
+model TrashOperation {
+  id           String    @id @default(cuid())
+  manifestJson Json // [{ from, to, fileId }]
+  fileCount    Int
+  bytes        BigInt
+  undoneAt     DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Taste and recommendations
+// ─────────────────────────────────────────────────────────────
+
+model ListeningEvent {
+  id         String   @id @default(cuid())
+  source     String // SPOTIFY_EXPORT | SPOTIFY_API | NAVIDROME | LASTFM
+  trackId    String?
+  artistName String
+  trackName  String
+  playedAt   DateTime
+  msPlayed   Int?
+  skipped    Boolean  @default(false)
+
+  @@unique([source, artistName, trackName, playedAt])
+  @@index([playedAt])
+  @@index([artistName])
+}
+
+model ArtistNode {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  normName  String // NOT unique — aggressive normalization collides legitimately (plan.md §2.2)
+  mbid      String?
+  inLibrary Boolean @default(false)
+  affinity  Float   @default(0)
+
+  edgesOut ArtistEdge[] @relation("from")
+  edgesIn  ArtistEdge[] @relation("to")
+
+  @@index([normName])
+  @@index([affinity])
+}
+
+model ArtistEdge {
+  id     String @id @default(cuid())
+  fromId String
+  toId   String
+  source String // LASTFM | DEEZER | YTM | COOCCURRENCE | LLM
+  weight Float
+
+  from ArtistNode @relation("from", fields: [fromId], references: [id], onDelete: Cascade)
+  to   ArtistNode @relation("to", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId, source])
+  @@index([toId])
+}
+
+model Mix {
+  id          String   @id @default(cuid())
+  slot        Int      @unique // 1..6, stable "Daily Mix N" identity
+  name        String
+  descriptor  String
+  generatedAt DateTime
+  playlistId  String?
+  seedJson    Json
+
+  playlist Playlist? @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Operations
+// ─────────────────────────────────────────────────────────────
+
+model JobRun {
+  id        String    @id @default(cuid())
+  queue     String
+  name      String
+  jobId     String? // deterministic BullMQ id, for idempotency
+  status    JobStatus @default(QUEUED)
+  progress  Int       @default(0)
+  total     Int?
+  payload   Json?
+  logsJson  Json? // [{ ts, level, msg, ...ctx }] — this is what the UI reads
+  error     String?
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  @@index([queue, startedAt])
+  @@index([status])
+  @@unique([queue, jobId])
+}
+
+/// History of imports for the Import screen (§8). JobRun is the wrong grain.
+model ImportRun {
+  id          String       @id @default(cuid())
+  kind        ImportKind
+  status      ImportStatus
+  input       String? // pasted URL, filename
+  playlistName String?
+  imageUrl    String?
+  tracksFound Int          @default(0)
+  tracksNew   Int          @default(0)
+  message     String?
+  detailJson  Json?
+  createdAt   DateTime     @default(now())
+
+  @@index([createdAt])
+}
+
+/// External service connections. Secrets are AES-256-GCM ciphertext (see A4) and
+/// are only ever decrypted in the worker — never serialized to the client.
+model Connection {
+  id           String    @id @default(cuid())
+  provider     String    @unique // spotify | navidrome | lastfm | acoustid | ollama | lidarr | slskd
+  enabled      Boolean   @default(false)
+  accountId    String? // Spotify account_id (May 2026) — stable, use over `id`
+  externalId   String? // Spotify `id` — still needed for owner comparison
+  displayName  String?
+  secretCipher String? // encrypted JSON blob of tokens/credentials
+  expiresAt    DateTime?
+  lastOkAt     DateTime?
+  lastError    String?
+  metaJson     Json?
+  updatedAt    DateTime  @updatedAt
+}
+
+model AppUser {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model Setting {
+  key   String @id
+  value Json
+}

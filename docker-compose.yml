@@ -1,0 +1,85 @@
+# Crate — see docs/DECISIONS.md A5/A6 for image and dependency choices.
+#
+# PATH MAPPING: the paths below are what THIS app sees. Navidrome almost certainly
+# mounts the same library somewhere else. Set pathMappings in Settings and run the
+# "Verify paths" diagnostic — do not assume the two match. (PROMPT.md §5)
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: crate
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crate -d crate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
+      REDIS_URL: redis://redis:6379
+      CRATE_ENCRYPTION_KEY: ${CRATE_ENCRYPTION_KEY:?32-byte base64 key; losing it means re-entering every credential}
+      CRATE_SESSION_SECRET: ${CRATE_SESSION_SECRET:?set CRATE_SESSION_SECRET in .env}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      NODE_ENV: production
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - ${MUSIC_ROOT:-./data/music}:/music
+      - ${STAGING_ROOT:-./data/staging}:/staging
+      - ${TRASH_ROOT:-./data/trash}:/trash
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
+      REDIS_URL: redis://redis:6379
+      CRATE_ENCRYPTION_KEY: ${CRATE_ENCRYPTION_KEY:?}
+      MUSIC_ROOT: /music
+      STAGING_ROOT: /staging
+      TRASH_ROOT: /trash
+      NODE_ENV: production
+    volumes:
+      - ${MUSIC_ROOT:-./data/music}:/music
+      - ${STAGING_ROOT:-./data/staging}:/staging
+      - ${TRASH_ROOT:-./data/trash}:/trash
+
+  # Any provider that must be VPN-routed runs under gluetun and therefore has NO
+  # ports of its own — it publishes through gluetun. Reach it at gluetun's published
+  # port, not at container:port. See CLAUDE.md → Gotchas → Gluetun.
+  #
+  # slskd:
+  #   image: slskd/slskd
+  #   network_mode: service:gluetun
+  #   depends_on: [gluetun]
