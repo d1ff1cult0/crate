@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { prisma } from '@crate/db'
 import { SubsonicClient, verifyPaths } from '@crate/integrations'
 import { decryptSecret } from '../../../../lib/crypto'
+import { PATHS_VERIFIED_KEY } from '../../../../lib/setup-state'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -51,9 +52,11 @@ export async function POST() {
 
   const musicRoot = process.env.MUSIC_ROOT ?? settings.musicRoot ?? '/music'
 
+  const mappings = settings.pathMappings ?? []
+
   const result = await verifyPaths({
     subsonic: new SubsonicClient(creds),
-    mappings: settings.pathMappings ?? [],
+    mappings,
     musicRoot,
     sampleFilePath: sampleFile?.path,
     writeProbe: async (relativePath, content) => {
@@ -63,6 +66,28 @@ export async function POST() {
     },
     deleteProbe: async (absolute) => {
       await unlink(absolute)
+    },
+  })
+
+  // Persist the outcome so the rest of the app knows this happened.
+  //
+  // Running the diagnostic and passing is a fact about the system, not about this
+  // request — the setup wizard has no other way to know the paths were ever proven, and
+  // without this it showed "verify paths" as outstanding forever no matter how many
+  // times the diagnostic went green.
+  //
+  // The mappings that were verified are stored ALONGSIDE the timestamp, not just the
+  // timestamp. A pass only vouches for the configuration it actually tested, so editing
+  // a mapping afterwards has to invalidate it — otherwise the wizard would keep claiming
+  // a mapping was verified when the thing that was verified has since been replaced.
+  await prisma.setting.upsert({
+    where: { key: PATHS_VERIFIED_KEY },
+    create: {
+      key: PATHS_VERIFIED_KEY,
+      value: { ok: result.ok, at: new Date().toISOString(), mappings } as object,
+    },
+    update: {
+      value: { ok: result.ok, at: new Date().toISOString(), mappings } as object,
     },
   })
 

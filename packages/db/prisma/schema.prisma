@@ -398,7 +398,7 @@ model TrashOperation {
 
 model ListeningEvent {
   id         String   @id @default(cuid())
-  source     String // SPOTIFY_EXPORT | SPOTIFY_API | NAVIDROME | LASTFM
+  source     String // SPOTIFY_EXPORT | SPOTIFY_API | NAVIDROME | LISTENBRAINZ
   trackId    String?
   artistName String
   trackName  String
@@ -430,7 +430,7 @@ model ArtistEdge {
   id     String @id @default(cuid())
   fromId String
   toId   String
-  source String // LASTFM | DEEZER | YTM | COOCCURRENCE | LLM
+  source String // LISTENBRAINZ | DEEZER | YTM | COOCCURRENCE | LLM
   weight Float
 
   from ArtistNode @relation("from", fields: [fromId], references: [id], onDelete: Cascade)

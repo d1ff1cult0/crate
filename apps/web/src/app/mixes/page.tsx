@@ -84,7 +84,7 @@ export default async function MixesPage() {
           >
             Mixes come from three inputs, and the more of them exist the better they get:
             the Spotify GDPR streaming history (the richest by far — import it on the
-            Import screen when it arrives), Last.fm scrobbles if you connect an account,
+            Import screen when it arrives), your ListenBrainz listens if you connect an account,
             and Navidrome play counts, which accumulate on their own once you start
             listening. With none of those, six playlists sampled from nothing would be
             indistinguishable from random, so this screen stays empty instead.

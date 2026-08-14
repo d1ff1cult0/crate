@@ -45,12 +45,12 @@ It also needs an AcoustID API key — free, but it's an account. §12 says ask b
 
 *"Six mixes appear in Navidrome every morning and I'd genuinely press play on at least four."*
 
-Everything else in this brief is engineering with a knowable answer. This isn't. Daily Mix quality comes from track-level collaborative filtering over hundreds of millions of listeners. What §7.8 specifies — Louvain communities over an artist graph blended from Last.fm, Deezer, YTM radios and your own co-occurrence, sampled by affinity with recency penalties — is a genuinely good approximation and I think it's the right design. But it's approximating a fundamentally different kind of signal, and the honest range of outcomes is "surprisingly good" to "pleasant but samey".
+Everything else in this brief is engineering with a knowable answer. This isn't. Daily Mix quality comes from track-level collaborative filtering over hundreds of millions of listeners. What §7.8 specifies — Louvain communities over an artist graph blended from ListenBrainz, Deezer, YTM radios and your own co-occurrence, sampled by affinity with recency penalties — is a genuinely good approximation and I think it's the right design. But it's approximating a fundamentally different kind of signal, and the honest range of outcomes is "surprisingly good" to "pleasant but samey".
 
 Three things move it toward the good end, in order of impact:
 
 1. **The GDPR streaming history** (§1.2). With timestamps and `ms_played` this is real per-track behavioural data over years. Without it, the taste model runs on top-tracks snapshots and whatever Navidrome has accumulated since migration — which early on is nearly nothing.
-2. **Last.fm connected early.** §7.8 rules out ListenBrainz, which is your call and I'll respect it — but that leaves Last.fm as the only remaining source of real collaborative-filtering data in the blend (Deezer's related-artists is thin, YTM radios are good but reflect YouTube's population, co-occurrence only knows what you already have). Last.fm carries more weight in this design than the brief implies. A free API key, connected in phase 1, costs nothing and starts accumulating.
+2. **ListenBrainz connected early.** ~~§7.8 rules out ListenBrainz~~ — **superseded by D8**: the owner's objection was to a Navidrome *scrobbling* setup, not to ListenBrainz as a data source, so it is now the primary similarity source. It carries more weight in this design than any other input, because the alternatives are thin (Deezer's related-artists), population-skewed (YTM radios) or limited to what you already own (co-occurrence). Similarity needs no token at all; a token additionally pulls your own listens into the taste model.
 3. **The outcome feedback loop** (§7.8's "log which recommended tracks got played versus skipped"). This is what makes it improve, and it needs weeks of use. Phase 7 shipping is where the engine starts learning, not where it's finished.
 
 I'd also soften one rule: §7.8's *"nothing played in the last 14 days"* is aggressive. Daily Mix is comfortable and familiar *because* it replays things you like. A 14-day exclusion on a library the size of yours risks mixes made mostly of stuff you skipped for a reason. I'd make it a **penalty weight rather than a hard exclusion**, configurable, and tune from there.
@@ -131,7 +131,7 @@ This is worth getting right before the first migration, because unpicking it lat
 - **`PlaylistItem @@unique([playlistId, position])`** makes reordering painful — any insert needs a shuffle that transiently violates the constraint. Either rewrite the whole item list inside one transaction (simplest, fine at playlist scale) or use fractional positions. Worth deciding now.
 - **`Mix.slot`** wants a uniqueness rule — `@@unique([slot])` if slots are permanent identities, or `@@unique([slot, generatedAt])` if you want history. §7.8's "Mix 3 keeps meaning roughly the same thing" implies the former plus a separate generation log.
 - **Missing models:** `ImportRun` (§8's Import screen wants "history of past imports with their outcomes" and `JobRun` isn't the right grain), a credentials/connection model for provider secrets and OAuth tokens (§11 wants them encrypted at rest — they need somewhere to live that isn't `Setting`), and an auth/session model for the single login.
-- **`LibraryTrack.playCount`/`lastPlayedAt`/`starred`** are Navidrome-synced. If Last.fm also lands, these want a source dimension or they'll fight. Suggest keeping the raw signal in `ListeningEvent` (which already has `source`) and treating these three as a derived cache.
+- **`LibraryTrack.playCount`/`lastPlayedAt`/`starred`** are Navidrome-synced. If ListenBrainz listens also land, these want a source dimension or they'll fight. Suggest keeping the raw signal in `ListeningEvent` (which already has `source`) and treating these three as a derived cache.
 - **`DownloadRequest.sourceTrackId`** points at the entity under §2.1, which is what you want — one request per missing recording, not per playlist appearance.
 
 ---
@@ -143,7 +143,7 @@ Same eight phases as §10, with the adjustments above folded in. Each ships work
 ### Phase 1 — Foundations
 Monorepo, Prisma schema (with §2's changes), Docker Compose (web, worker, postgres, redis), single-user auth, settings with encrypted secrets, path mapping + **Verify paths** diagnostic, BullMQ infrastructure, `JobRun` + SSE progress, design system and app shell.
 
-Also here: **connect Last.fm** (§1.4) and set `SPOTIFY_MARKET`.
+Also here: **connect ListenBrainz** (§1.4, D8) and set `SPOTIFY_MARKET`.
 
 **Done when:** you log in, configure paths, run a trivial job, and watch it progress live.
 **Risk:** low. Path mapping is the one thing that must be exactly right, and the diagnostic is how we know it is.
@@ -188,7 +188,7 @@ Grouping passes, quality scoring, keeper selection, variant protection, dry-run/
 **Risk:** medium — the trust bar is the hard part, not the grouping.
 
 ### Phase 7 — Recommendations
-Taste model from GDPR history + Navidrome + Last.fm, similarity graph (Last.fm, Deezer, YTM radios, co-occurrence), Louvain clustering → six stable mix slots, weighted sampling with discovery slots, release radar via MusicBrainz, LLM curator with the library resolver.
+Taste model from GDPR history + Navidrome + ListenBrainz, similarity graph (ListenBrainz, Deezer, YTM radios, co-occurrence), Louvain clustering → six stable mix slots, weighted sampling with discovery slots, release radar via MusicBrainz, LLM curator with the library resolver.
 
 **Done when:** six mixes appear in Navidrome every morning and you'd press play on at least four.
 **Risk:** **highest, and least controllable.** See §1.4.
@@ -202,7 +202,7 @@ First-run wizard, `Cmd+K` palette, mobile, backup/restore, docs.
 
 | Risk | Phase | Why | Mitigation |
 |---|---|---|---|
-| **Recommendation quality is subjective and unfalsifiable until late** | 7 | Approximating population-scale collaborative filtering from single-user data | GDPR export requested now; Last.fm from phase 1; outcome feedback loop; expectations set in §1.4 |
+| **Recommendation quality is subjective and unfalsifiable until late** | 7 | Approximating population-scale collaborative filtering from single-user data | GDPR export requested now; ListenBrainz from phase 1; outcome feedback loop; expectations set in §1.4 |
 | **Matching quality decides whether the app feels magic or infuriating** | 3 | Fuzzy matching on messy real-world metadata; both false positives and false negatives are costly | ISRC/MBID backfill moved to phase 2; fixture suite in `core` built from your nastiest titles; nothing below 0.90 auto-acted |
 | **Wrong track downloads and lands in the library** | 4 | Provider search is text matching against an adversarial catalogue (karaoke, sped-up, 10-hour loops) | Candidate scoring with hard duration reject; full scored-candidate logging; postprocess verification before the library sees it |
 | **Spotify harvest is slower than expected and the clock runs out** | 1.5/3 | One request per track, undocumented rate limits, ISRC backfill multiplies the album path | Resumable checkpointing; priority ordering (playlists/liked first); measure the real rate empirically in the first run rather than assuming |

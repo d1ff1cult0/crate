@@ -178,8 +178,9 @@ export default async function OverviewPage() {
               }
             >
               Connect Navidrome so playlists have somewhere to go, and Spotify while the
-              subscription still works. Last.fm is worth connecting early too — it feeds
-              the recommendation engine and starts accumulating immediately.
+              subscription still works. ListenBrainz is worth connecting early too — it
+              feeds the recommendation engine, and its similarity data needs no token at
+              all.
             </EmptyState>
           ) : (
             <ul className="space-y-2.5">

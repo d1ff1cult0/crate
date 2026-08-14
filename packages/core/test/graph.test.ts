@@ -11,10 +11,11 @@ import {
 
 describe('blendEdges', () => {
   it('normalizes each source independently so raw scale cannot decide clusters', () => {
-    // Co-occurrence counts run to the hundreds; Last.fm similarity is 0–1. Without
-    // per-source normalization the counts would drown the similarity entirely.
+    // Co-occurrence counts run to the hundreds; ListenBrainz scores run to the
+    // thousands and are on a different scale again. Without per-source normalization
+    // whichever source happens to use the biggest numbers would decide every cluster.
     const edges: RawEdge[] = [
-      { from: 'A', to: 'B', weight: 1.0, source: 'LASTFM' },
+      { from: 'A', to: 'B', weight: 1.0, source: 'LISTENBRAINZ' },
       { from: 'C', to: 'D', weight: 400, source: 'COOCCURRENCE' },
       { from: 'C', to: 'E', weight: 4, source: 'COOCCURRENCE' },
     ]
@@ -23,22 +24,22 @@ describe('blendEdges', () => {
     const cd = blended.find((e) => e.to === 'D')!
     const ce = blended.find((e) => e.to === 'E')!
 
-    expect(ab.weight).toBeCloseTo(1.0, 5) // full normalized × LASTFM weight 1.0
+    expect(ab.weight).toBeCloseTo(1.0, 5) // full normalized × LISTENBRAINZ weight 1.0
     expect(cd.weight).toBeCloseTo(0.9, 5) // full normalized × COOCCURRENCE weight 0.9
     expect(ce.weight).toBeLessThan(0.05) // 4/400 of the way up
   })
 
   it('merges the two directions of the same pair into one undirected edge', () => {
     const blended = blendEdges([
-      { from: 'A', to: 'B', weight: 1, source: 'LASTFM' },
+      { from: 'A', to: 'B', weight: 1, source: 'LISTENBRAINZ' },
       { from: 'B', to: 'A', weight: 1, source: 'DEEZER' },
     ])
     expect(blended).toHaveLength(1)
-    expect(blended[0]!.sources).toEqual(['DEEZER', 'LASTFM'])
+    expect(blended[0]!.sources).toEqual(['DEEZER', 'LISTENBRAINZ'])
   })
 
   it('drops self-loops, which carry no similarity information', () => {
-    expect(blendEdges([{ from: 'A', to: 'A', weight: 1, source: 'LASTFM' }])).toHaveLength(0)
+    expect(blendEdges([{ from: 'A', to: 'A', weight: 1, source: 'LISTENBRAINZ' }])).toHaveLength(0)
   })
 })
 
@@ -46,15 +47,15 @@ describe('louvain', () => {
   it('separates two dense clusters joined by a single weak edge', () => {
     const edges = blendEdges([
       // Cluster one
-      { from: 'a1', to: 'a2', weight: 1, source: 'LASTFM' },
-      { from: 'a2', to: 'a3', weight: 1, source: 'LASTFM' },
-      { from: 'a1', to: 'a3', weight: 1, source: 'LASTFM' },
+      { from: 'a1', to: 'a2', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'a2', to: 'a3', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'a1', to: 'a3', weight: 1, source: 'LISTENBRAINZ' },
       // Cluster two
-      { from: 'b1', to: 'b2', weight: 1, source: 'LASTFM' },
-      { from: 'b2', to: 'b3', weight: 1, source: 'LASTFM' },
-      { from: 'b1', to: 'b3', weight: 1, source: 'LASTFM' },
+      { from: 'b1', to: 'b2', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'b2', to: 'b3', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'b1', to: 'b3', weight: 1, source: 'LISTENBRAINZ' },
       // The bridge
-      { from: 'a1', to: 'b1', weight: 0.05, source: 'LASTFM' },
+      { from: 'a1', to: 'b1', weight: 0.05, source: 'LISTENBRAINZ' },
     ])
 
     const communities = louvain(edges)
@@ -73,7 +74,7 @@ describe('louvain', () => {
         from: `n${i % 6}`,
         to: `n${(i + 1) % 6}`,
         weight: 1,
-        source: 'LASTFM',
+        source: 'LISTENBRAINZ',
       })),
     )
     const first = louvain(edges).map((c) => c.members.sort().join(','))
@@ -83,8 +84,8 @@ describe('louvain', () => {
 
   it('ranks members by the supplied node weights', () => {
     const edges = blendEdges([
-      { from: 'quiet', to: 'loud', weight: 1, source: 'LASTFM' },
-      { from: 'loud', to: 'middle', weight: 1, source: 'LASTFM' },
+      { from: 'quiet', to: 'loud', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'loud', to: 'middle', weight: 1, source: 'LISTENBRAINZ' },
     ])
     const communities = louvain(edges, {
       nodeWeights: new Map([
@@ -169,8 +170,8 @@ describe('nameMix', () => {
 describe('discoveryCandidates', () => {
   it('returns only artists NOT already in the library', () => {
     const edges = blendEdges([
-      { from: 'owned', to: 'unowned', weight: 1, source: 'LASTFM' },
-      { from: 'owned', to: 'alsoOwned', weight: 1, source: 'LASTFM' },
+      { from: 'owned', to: 'unowned', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'owned', to: 'alsoOwned', weight: 1, source: 'LISTENBRAINZ' },
     ])
     const candidates = discoveryCandidates(
       edges,
@@ -182,8 +183,8 @@ describe('discoveryCandidates', () => {
 
   it('weights a neighbour by how much the listener likes the artist it hangs off', () => {
     const edges = blendEdges([
-      { from: 'favourite', to: 'viaFavourite', weight: 1, source: 'LASTFM' },
-      { from: 'barelyPlayed', to: 'viaBarely', weight: 1, source: 'LASTFM' },
+      { from: 'favourite', to: 'viaFavourite', weight: 1, source: 'LISTENBRAINZ' },
+      { from: 'barelyPlayed', to: 'viaBarely', weight: 1, source: 'LISTENBRAINZ' },
     ])
     const candidates = discoveryCandidates(
       edges,

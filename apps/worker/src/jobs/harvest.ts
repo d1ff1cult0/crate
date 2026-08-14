@@ -10,7 +10,7 @@
  * Spotify). This file is only the Prisma-backed port plus the queue plumbing.
  */
 
-import { normalizeTrack } from '@crate/core'
+import { normalizeTrack, sanitizeDeep, sanitizeText, sanitizeTextOrNull } from '@crate/core'
 import { prisma } from '@crate/db'
 import {
   harvestEverything,
@@ -139,22 +139,31 @@ export function createHarvestPort(ctx: JobRunContext): HarvestPort {
       if (tracks.length === 0) return { created: 0 }
 
       const rows = tracks.map((t) => {
-        const norm = normalizeTrack({ title: t.title, artists: t.artists })
+        // Sanitize before storing, for the same reason the scanner does: Postgres
+        // rejects a NUL byte in text and jsonb alike, and the whole statement fails.
+        //
+        // Spotify's own API will not send one, but this port is also what the CSV and
+        // text importers write through, and a pasted file is exactly where a stray
+        // control byte arrives. `rawJson` goes through too — jsonb is no more tolerant
+        // than a text column.
+        const title = sanitizeText(t.title)
+        const artists = t.artists.map(sanitizeText).filter(Boolean)
+        const norm = normalizeTrack({ title, artists })
         return {
           source: 'SPOTIFY' as const,
           externalId: t.externalId,
           spotifyId: t.externalId,
-          title: t.title,
-          artists: t.artists,
-          album: t.album ?? null,
-          albumArtist: t.albumArtist ?? null,
+          title,
+          artists,
+          album: sanitizeTextOrNull(t.album),
+          albumArtist: sanitizeTextOrNull(t.albumArtist),
           durationMs: t.durationMs ?? null,
-          isrc: t.isrc ?? null,
+          isrc: sanitizeTextOrNull(t.isrc),
           isrcStatus: t.isrcStatus,
           year: t.year ?? null,
           normTitle: norm.title.norm,
           normArtist: norm.artist.normAll,
-          rawJson: t.raw as object,
+          rawJson: sanitizeDeep(t.raw).value as object,
         }
       })
 
@@ -223,8 +232,10 @@ export function createHarvestPort(ctx: JobRunContext): HarvestPort {
       await prisma.listeningEvent.createMany({
         data: events.map((e) => ({
           source: 'SPOTIFY_API',
-          artistName: e.artistName,
-          trackName: e.trackName,
+          // Also sanitized: the GDPR streaming-history importer writes through here,
+          // and that is a user-supplied file rather than an API response.
+          artistName: sanitizeText(e.artistName),
+          trackName: sanitizeText(e.trackName),
           playedAt: e.playedAt,
         })),
         // The unique constraint makes repeated recently-played polls converge.

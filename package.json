@@ -3,13 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@9.15.4",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
     "dev:web": "pnpm --filter @crate/web dev",
     "dev:worker": "pnpm --filter @crate/worker dev",
     "build": "pnpm -r build",
-    "test": "pnpm --filter @crate/core --filter @crate/integrations --filter @crate/providers test",
+    "test": "pnpm --filter @crate/core --filter @crate/integrations --filter @crate/providers --filter @crate/web test",
     "test:core": "pnpm --filter @crate/core test",
     "test:watch": "pnpm --filter @crate/core test:watch",
     "typecheck": "pnpm -r typecheck",

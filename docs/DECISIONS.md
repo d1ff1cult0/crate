@@ -20,7 +20,60 @@ Two kinds of entry:
 | **D4** | Reverse sync to Spotify | No | No write scopes requested at OAuth. Scope list is read-only. |
 | **D5** | `SourceTrack` split | Approved | Implemented as `SourceTrack` (identity, one row per source+externalId) + `SourcePlaylistItem` (membership/position/addedAt). |
 | **D6** | Cuts | My call | Skipping other-service URL resolvers and spotdl, as proposed in `plan.md` §1.5. The resolver registry stays open, so either is a new file later rather than a refactor. |
-| **D7** | Critique points | All approved | AcoustID/MusicBrainz backfill → phase 2. Last.fm connected in phase 1 and treated as load-bearing. The 14-day replay rule becomes a **penalty weight**, not a hard exclusion. |
+| **D7** | Critique points | All approved | AcoustID/MusicBrainz backfill → phase 2. ~~Last.fm~~ **ListenBrainz** (D8) connected in phase 1 and treated as load-bearing. The 14-day replay rule becomes a **penalty weight**, not a hard exclusion. |
+
+| **D8** | Last.fm or ListenBrainz? | **ListenBrainz**, replacing Last.fm entirely | `PROMPT.md` §7.8's "explicitly do not build on ListenBrainz" was based on a misunderstanding and is withdrawn — see D8-detail. |
+
+### D8-detail — ListenBrainz replaces Last.fm
+
+**The original instruction was about the wrong thing.** §7.8 ruled out ListenBrainz, and
+`plan.md` §1.4 took that at face value and concluded Last.fm was therefore load-bearing.
+The owner's actual objection was to a **Navidrome scrobbling setup** — multi-scrobbler and
+the Navidrome scrobble plugin — not to ListenBrainz as a similarity source. With that
+cleared up, ListenBrainz is strictly better here and Last.fm is gone.
+
+**The endpoint everyone guesses does not exist.** `GET /1/artist/{mbid}/similar` on the
+core API **404s**, as does `/1/similar-artists`. Verified against the live service
+2026-08-14. Similarity lives on a separate host:
+
+```
+https://labs.api.listenbrainz.org/similar-artists/json?artist_mbids=…&algorithm=…
+https://labs.api.listenbrainz.org/similar-recordings/json?recording_mbids=…&algorithm=…
+```
+
+`algorithm` is **required** and validated against a fixed enum that differs between the two
+endpoints. Omit it and the response is a 400 with an HTML body rather than JSON, which is
+also why the client treats a JSON parse failure as an expected outcome instead of an error.
+
+**MBIDs, not names — the structural change.** Last.fm resolved artists by name;
+ListenBrainz works entirely in MusicBrainz ids. That costs a name→MBID resolution on the
+way in, cached onto `ArtistNode.mbid` so it happens once per artist ever rather than once
+per graph rebuild. In exchange there are no fuzzy name collisions, results come back as
+ids that can be stored and reused, and the release radar gets its MBIDs for free.
+
+It also composes with the listen history in a way Last.fm could not: **each listen carries
+`artist_mbids` and `recording_mbid` inline**, so anything actually played feeds the
+similarity graph with no lookup at all.
+
+**A bug this nearly hid.** Navidrome submits `additional_info.artist_mbids: []` — an empty
+array, not a missing field — and ListenBrainz fills the real ids in under `mbid_mapping`.
+The natural `info?.artist_mbids ?? mapping?.artist_mbids` keeps the empty array and throws
+the ids away. Since the owner's listens all arrive from Navidrome via multi-scrobbler,
+**every single one** would have silently lost its MBIDs — the exact advantage that
+justified the switch. Caught by running the client against the real account rather than
+against the fixtures, and now covered by a regression test built from that real payload.
+
+**Auth.** The token is optional and only affects the listen import; similarity is open
+data. So the connection is useful with nothing filled in, and the UI says so. The username
+is read back from the token rather than typed, because a wrong username returns an empty
+list rather than an error.
+
+**Existing data was relabelled, not deleted.** Migration
+`20260814140000_listenbrainz_replaces_lastfm` renames `LASTFM` to `LISTENBRAINZ` in
+`ArtistEdge.source` and `ListeningEvent.source` — leaving them would make them fall through
+to the default blend weight and contribute at the wrong strength rather than failing
+visibly. The old Last.fm connection row is disabled and its ciphertext cleared, because the
+stored credential shape is different and cannot be reinterpreted.
 
 ### D1-detail — the deadline changes the build order
 
@@ -120,7 +173,7 @@ These two instructions are compatible, and the boundary matters:
 So: features are built complete, verified against fixtures, and meet real data when it arrives — the GDPR export, the Lidarr library, and the harvest.
 
 ### A17. Phase 1 is trimmed to what the harvest needs
-**Chose:** deferred within phase 1 — full settings surface, mobile responsive pass, command palette, and anything cosmetic. Kept — DB, job infra, SSE progress, auth, app shell, path mapping + verify, Last.fm connect (D7).
+**Chose:** deferred within phase 1 — full settings surface, mobile responsive pass, command palette, and anything cosmetic. Kept — DB, job infra, SSE progress, auth, app shell, path mapping + verify, similarity-source connect (D7, now ListenBrainz per D8).
 **Why:** D1. Every day spent on phase 1 polish is a day of harvest runway. The deferred items have no deadline; the harvest does.
 **Review:** if the subscription gets extended to 2026-10-01, some of this can come back before phase 2.
 
@@ -279,6 +332,46 @@ bounded — but the table grows without limit and nothing prunes it. A retention
 succeeded runs (keeping every failed and paused one, which are the debugging surface) is
 the obvious answer. **Left for the owner to decide**, since it is a behaviour change to how
 much history is kept rather than a bug.
+
+### A29. Two more production bugs from the real library scan
+
+**1. A NUL byte in one file's tags aborted the whole scan.**
+
+```
+PostgresError { code: "22021", message: "invalid byte sequence for encoding \"UTF8\": 0x00" }
+```
+
+Postgres cannot store a NUL in a text *or* jsonb column — the driver rejects the entire
+statement. One file among 35,000 was enough. The usual causes are a UTF-16 tag read as
+UTF-8 (every other byte becomes a NUL) or a fixed-width ID3 field that was never trimmed.
+
+**Chose:** sanitize at the boundary where untrusted bytes enter — `readFileMetadata` —
+rather than at each of the several places metadata reaches Prisma. Everything downstream
+consumes a `ScannedFile` and inherits the guarantee. Unpaired surrogates are stripped too:
+a JavaScript string can hold half a surrogate pair, UTF-8 cannot encode one, and it
+produces the identical Postgres error for a completely different reason.
+
+Deliberately **not** reusing the normalizer. "Make this storable" must not quietly also
+mean "make this different" — sanitizing `Sigur Rós` returns `Sigur Rós`, and a valid emoji
+in a title survives.
+
+The repair is **logged with the file path and the field names**, and the scan summary
+counts them. A tag silently fixed is a tag the owner cannot go and fix at the source.
+
+**2. "Verify paths" passed and the setup wizard never noticed.**
+
+The diagnostic ran, reported every step green, and nothing wrote the result down — so the
+wizard went on showing the step as outstanding forever. The wizard derives every other step
+from real data, and this was the one with nothing to derive from.
+
+**Chose:** persist `{ ok, at, mappings }` under the `pathsVerified` setting. Storing the
+**mappings that were tested**, not just a timestamp, is the part that matters: a pass
+vouches for the configuration it actually tested and nothing else, so editing a mapping
+afterwards marks the step **stale** rather than letting it inherit a verification of
+something that has since been replaced. That is the one setting in this app most likely to
+be silently wrong, and claiming it was verified when it was not would be worse than showing
+the step as incomplete. Reordering the list does not invalidate it — order carries no
+meaning, since lookup is longest-prefix-wins.
 
 ### A15. Postponed to a later pass
 ~~Recorded so they aren't mistaken for finished work: provider adapters beyond the interface itself, the LLM curator, mix generation, release radar, the duplicates review UI, the first-run wizard, and the command palette.~~

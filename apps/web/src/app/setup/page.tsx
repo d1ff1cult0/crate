@@ -21,6 +21,7 @@ import Link from 'next/link'
 import { JobButton } from '../../components/job-button'
 import { SegmentedMeter } from '../../components/meter'
 import { Badge, Button, Panel } from '../../components/ui'
+import { PATHS_VERIFIED_KEY, pathVerificationState } from '../../lib/setup-state'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,7 +55,7 @@ export default async function SetupPage() {
     prisma.connection.findUnique({ where: { provider: 'spotify' } }),
     prisma.connection.findUnique({ where: { provider: 'navidrome' } }),
     prisma.setting.findUnique({ where: { key: 'app' } }),
-    prisma.setting.findUnique({ where: { key: 'pathsVerifiedAt' } }),
+    prisma.setting.findUnique({ where: { key: PATHS_VERIFIED_KEY } }),
     prisma.sourceTrack.count(),
     prisma.libraryFile.count({ where: { missingSince: null } }),
     prisma.match.count({ where: { status: 'MATCHED' } }),
@@ -69,6 +70,8 @@ export default async function SetupPage() {
     musicRoot?: string
   }
   const mappings = settings.pathMappings ?? []
+  // A pass only vouches for the mappings it tested — editing one makes it stale.
+  const pathState = pathVerificationState(pathProbe?.value, mappings)
   const daysLeft = Math.ceil((PREMIUM_LAPSE.getTime() - Date.now()) / 86_400_000)
 
   const steps: Step[] = [
@@ -84,13 +87,29 @@ export default async function SetupPage() {
     },
     {
       title: 'Verify paths',
-      state: pathProbe ? 'done' : mappings.length > 0 ? 'ready' : 'attention',
-      detail: pathProbe
-        ? `Verified. Navidrome reads the same files this app writes.`
-        : mappings.length > 0
-          ? 'Mappings are configured but the probe has not run. Run it — an unverified mapping is the single most common reason playlists come out empty in Navidrome.'
-          : 'No path mappings yet. The path this app sees is almost never the path Navidrome sees, and getting it wrong makes every playlist silently empty.',
-      action: { kind: 'link' as const, href: '/settings', label: 'Set up and verify paths' },
+      state:
+        pathState.status === 'verified'
+          ? 'done'
+          : pathState.status === 'never' && mappings.length === 0
+            ? 'attention'
+            : pathState.status === 'failed'
+              ? 'attention'
+              : 'ready',
+      detail:
+        pathState.status === 'verified'
+          ? `Verified ${pathState.at.toLocaleString()}. Navidrome reads the same files this app writes.`
+          : pathState.status === 'stale'
+            ? `Verified ${pathState.at.toLocaleString()}, but the mappings have been edited since. That earlier pass only vouched for the configuration it tested, so run it again.`
+            : pathState.status === 'failed'
+              ? `The last run on ${pathState.at.toLocaleString()} did not pass. Until it does, playlists will very likely come out empty in Navidrome.`
+              : mappings.length > 0
+                ? 'Mappings are configured but the probe has not run. Run it — an unverified mapping is the single most common reason playlists come out empty in Navidrome.'
+                : 'No path mappings yet. The path this app sees is almost never the path Navidrome sees, and getting it wrong makes every playlist silently empty.',
+      action: {
+        kind: 'link' as const,
+        href: '/settings',
+        label: pathState.status === 'verified' ? 'Re-verify paths' : 'Set up and verify paths',
+      },
     },
     {
       title: 'Harvest Spotify',

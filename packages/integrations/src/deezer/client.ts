@@ -3,12 +3,12 @@
  *
  * One of the four sources feeding the artist similarity graph. It needs no key and no
  * account, which is its whole appeal; the brief is also honest that its related-artists
- * data is thin compared to Last.fm's, so it is blended at a lower weight (see
+ * data is thin compared to ListenBrainz's, so it is blended at a lower weight (see
  * `SOURCE_WEIGHTS` in core/graph.ts) rather than treated as authoritative.
  *
  * Deezer returns related artists as an ordered list with no similarity scores at all, so
  * rank is converted into a synthetic 0–1 weight here. That conversion is the reason
- * blending normalizes per source: comparing a synthetic rank score against Last.fm's
+ * blending normalizes per source: comparing a synthetic rank score against ListenBrainz's
  * real similarity would be meaningless.
  */
 

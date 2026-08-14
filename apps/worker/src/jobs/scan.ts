@@ -14,7 +14,13 @@
 
 import { readdir, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import { normalizeTrack, qualityScore } from '@crate/core'
+import {
+  normalizeTrack,
+  qualityScore,
+  sanitizeDeep,
+  sanitizeText,
+  sanitizeTextVerbose,
+} from '@crate/core'
 import { prisma } from '@crate/db'
 import { parseFile } from 'music-metadata'
 import {
@@ -78,6 +84,11 @@ export interface ScannedFile {
   isrc?: string
   mbid?: string
   year?: number
+  /**
+   * Fields that contained characters Postgres cannot store and had to be repaired.
+   * Empty for almost every file; non-empty means the file's tags are damaged at source.
+   */
+  sanitized?: string[]
 }
 
 /** Read one file's metadata. Falls back to the filename when tags are absent. */
@@ -107,7 +118,7 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     ? String(Array.isArray(common.musicbrainz_recordingid) ? common.musicbrainz_recordingid[0] : common.musicbrainz_recordingid)
     : undefined
 
-  const tags: Record<string, unknown> = {
+  const rawTags: Record<string, unknown> = {
     title: common.title,
     artist: common.artist,
     albumartist: common.albumartist,
@@ -120,8 +131,41 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     musicbrainz_trackid: mbid,
   }
 
-  // A file with no title tag still belongs in the library — use the filename.
-  const fallbackTitle = path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'Unknown'
+  // ── Sanitize before ANYTHING is stored ────────────────────
+  //
+  // This is the boundary where untrusted bytes enter the system, so it is the only place
+  // that has to get this right: everything downstream — registerFile, the post-processor,
+  // dedupe — consumes a ScannedFile and inherits the guarantee.
+  //
+  // Real libraries contain tags with NUL bytes (a UTF-16 tag read as UTF-8, or an ID3
+  // field padded to a fixed width and never trimmed). Postgres cannot store one in a text
+  // or jsonb column at all, and the driver rejects the whole statement — one bad file in
+  // 35,000 aborted a full library scan with
+  // `invalid byte sequence for encoding "UTF8": 0x00`.
+  const sanitized: string[] = []
+  const clean = (value: string | undefined, field: string): string | undefined => {
+    if (value === undefined) return undefined
+    const result = sanitizeTextVerbose(value)
+    if (result.changed) sanitized.push(field)
+    // A tag that sanitizes to nothing was never usable; treat it as absent.
+    return result.value === '' ? undefined : result.value
+  }
+
+  // tagsJson goes into a jsonb column, which rejects a NUL just as firmly.
+  const cleanedTags = sanitizeDeep(rawTags)
+  if (cleanedTags.changedKeys.length > 0) sanitized.push(...cleanedTags.changedKeys.map((k) => `tags.${k}`))
+
+  const title = clean(common.title, 'title')
+  const artist = clean(common.artist, 'artist')
+  const albumArtist = clean(common.albumartist, 'albumartist')
+  const album = clean(common.album, 'album')
+  const cleanIsrc = clean(isrc, 'isrc')
+  const cleanMbid = clean(mbid, 'musicbrainz_trackid')
+
+  // A file with no title tag still belongs in the library — use the filename. Sanitized
+  // too: a path can carry odd bytes just as a tag can.
+  const fallbackTitle =
+    sanitizeText(path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? '') || 'Unknown'
 
   return {
     path,
@@ -133,15 +177,16 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     sizeBytes: BigInt(info.size),
     ...(durationMs ? { durationMs } : {}),
     mtime: info.mtime,
-    tags,
+    tags: cleanedTags.value,
     hasEmbeddedArt: (common.picture?.length ?? 0) > 0,
-    title: common.title ?? fallbackTitle,
-    artist: common.artist ?? common.albumartist ?? '',
-    ...(common.albumartist ? { albumArtist: common.albumartist } : {}),
-    ...(common.album ? { album: common.album } : {}),
-    ...(isrc ? { isrc } : {}),
-    ...(mbid ? { mbid } : {}),
+    title: title ?? fallbackTitle,
+    artist: artist ?? albumArtist ?? '',
+    ...(albumArtist ? { albumArtist } : {}),
+    ...(album ? { album } : {}),
+    ...(cleanIsrc ? { isrc: cleanIsrc } : {}),
+    ...(cleanMbid ? { mbid: cleanMbid } : {}),
     ...(common.year ? { year: common.year } : {}),
+    ...(sanitized.length > 0 ? { sanitized } : {}),
   }
 }
 
@@ -247,7 +292,14 @@ export async function registerFile(
 export async function runLibraryScan(
   ctx: JobRunContext,
   opts: { full?: boolean } = {},
-): Promise<{ scanned: number; added: number; unchanged: number; missing: number }> {
+): Promise<{
+  scanned: number
+  added: number
+  unchanged: number
+  missing: number
+  /** Files whose tags had to be repaired to be storable. Each one is logged by path. */
+  damaged: number
+}> {
   const settings = await loadSettings()
   const root = process.env.MUSIC_ROOT ?? settings.musicRoot
 
@@ -262,6 +314,7 @@ export async function runLibraryScan(
   let scanned = 0
   let added = 0
   let unchanged = 0
+  let damaged = 0
 
   for await (const path of walkAudioFiles(root)) {
     seen.add(path)
@@ -282,6 +335,18 @@ export async function runLibraryScan(
     if (!meta) {
       await ctx.log('warn', `Could not read metadata, skipping`, { path })
       continue
+    }
+
+    if (meta.sanitized) {
+      // Named, not silently repaired. The file is now storable and the scan carries on,
+      // but its tags are damaged at source and only the owner can fix that.
+      damaged += 1
+      await ctx.log('warn', 'Repaired unstorable characters in this file\'s tags', {
+        path,
+        fields: meta.sanitized,
+        detail:
+          'These tags contained NUL bytes or other characters PostgreSQL cannot store. They have been stripped for the database; the file itself is untouched. Usually a UTF-16 tag written as UTF-8, or a fixed-width ID3 field that was never trimmed.',
+      })
     }
 
     const contentHash = await hashAudioStream(path)
@@ -308,10 +373,16 @@ export async function runLibraryScan(
     await ctx.log('warn', `${goneIds.length} files are no longer on disk and have been marked missing (not deleted)`)
   }
 
-  await ctx.log('info', 'Scan complete', { scanned, added, unchanged, missing: goneIds.length })
+  await ctx.log('info', 'Scan complete', {
+    scanned,
+    added,
+    unchanged,
+    missing: goneIds.length,
+    tagsRepaired: damaged,
+  })
 
   // New library state means previously-missing matches may now resolve (§7.10).
   await enqueue('match', 'match-sweep', {}, { jobId: jobId("sweep", Date.now()) })
 
-  return { scanned, added, unchanged, missing: goneIds.length }
+  return { scanned, added, unchanged, missing: goneIds.length, damaged }
 }

@@ -46,12 +46,12 @@ const PROVIDERS: ProviderSpec[] = [
     ],
   },
   {
-    key: 'lastfm',
-    name: 'Last.fm',
-    note: 'Similarity data for recommendations. Connect this early — with ListenBrainz ruled out it is the only real collaborative-filtering source in the blend, and it accumulates over time.',
+    key: 'listenbrainz',
+    name: 'ListenBrainz',
+    note: 'The strongest similarity source for recommendations, and real collaborative-filtering data. Artist and track similarity need no token at all — leave both fields blank and it still works. A token additionally pulls your own listens into the taste model.',
     fields: [
-      { key: 'apiKey', label: 'API key', type: 'password' },
-      { key: 'username', label: 'Username (optional, for scrobbles)' },
+      { key: 'token', label: 'User token (optional)', type: 'password' },
+      { key: 'username', label: 'Username (optional — read from the token)' },
     ],
   },
   {

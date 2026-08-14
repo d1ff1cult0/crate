@@ -7,7 +7,7 @@
  *
  * Three jobs live here:
  *
- *   taste-refresh   pull Navidrome play counts/stars/last-played and Last.fm scrobbles
+ *   taste-refresh   pull Navidrome play counts/stars/last-played and ListenBrainz listens
  *                   into ListeningEvent, then recompute affinity
  *   generate-mixes  build the artist graph, cluster it, fill six stable slots, write them
  *   release-radar   weekly MusicBrainz sweep for new releases by high-affinity artists
@@ -15,10 +15,10 @@
  * Worth being honest about what this is, since plan.md §1.4 already was: Spotify's Daily
  * Mix comes from track-level collaborative filtering over hundreds of millions of
  * listeners. This approximates it from one person's history plus four public similarity
- * sources. The approximation gets better with the GDPR streaming history, with Last.fm
- * connected, and with weeks of the outcome feedback loop running — and it is honest
- * about having nothing to work with until at least one of those exists, rather than
- * generating six plausible-looking playlists out of noise.
+ * sources. The approximation gets better with the GDPR streaming history, with
+ * ListenBrainz connected, and with weeks of the outcome feedback loop running — and it is
+ * honest about having nothing to work with until at least one of those exists, rather
+ * than generating six plausible-looking playlists out of noise.
  */
 
 import {
@@ -42,7 +42,7 @@ import {
 import { prisma } from '@crate/db'
 import {
   DeezerClient,
-  LastfmClient,
+  ListenbrainzClient,
   LlmClient,
   MusicbrainzClient,
   YtmRadioClient,
@@ -60,10 +60,24 @@ import { loadSettings } from '../lib/settings.js'
 
 export interface TasteRefreshResult {
   navidromeEvents: number
-  lastfmEvents: number
+  listenbrainzEvents: number
   tracksScored: number
   artistsScored: number
 }
+
+/**
+ * Separator for co-occurrence pair keys.
+ *
+ * A NUL, because artist names contain spaces, commas, hyphens and very nearly every
+ * other printable character — splitting "Fontaines D.C." on a space would produce two
+ * artists that do not exist. Written as an escape rather than a raw byte: an embedded NUL
+ * makes the whole file read as binary to grep, diff and code review, which is a
+ * surprisingly high price for one delimiter.
+ */
+const COOCCURRENCE_SEP = '\u0000'
+
+/** MusicBrainz asks every client to identify itself. One definition, used everywhere. */
+const MB_USER_AGENT = 'Crate/0.1 (self-hosted library tool)'
 
 /**
  * Pull the live listening signals in, then recompute affinity across the library.
@@ -77,7 +91,7 @@ export interface TasteRefreshResult {
 export async function runTasteRefresh(ctx: JobRunContext): Promise<TasteRefreshResult> {
   const settings = await loadSettings()
   let navidromeEvents = 0
-  let lastfmEvents = 0
+  let listenbrainzEvents = 0
 
   // ── Navidrome ──────────────────────────────────────────
   const subsonic = await navidromeClient()
@@ -150,36 +164,75 @@ export async function runTasteRefresh(ctx: JobRunContext): Promise<TasteRefreshR
     await ctx.log('info', 'No Navidrome connection — skipping play-count import')
   }
 
-  // ── Last.fm ────────────────────────────────────────────
-  const lastfmConnection = await prisma.connection.findUnique({ where: { provider: 'lastfm' } })
-  if (lastfmConnection?.enabled && lastfmConnection.secretCipher) {
+  // ── ListenBrainz ───────────────────────────────────────
+  //
+  // The owner already feeds this continuously through multi-scrobbler, so it is a live
+  // signal rather than a one-off import — and unlike Last.fm's scrobbles, each listen
+  // carries artist and recording MBIDs inline. Those are stored on the way in, which is
+  // what lets the similarity graph skip a MusicBrainz name lookup for anything actually
+  // played.
+  const connection = await listenbrainzConnection()
+  if (connection) {
     try {
-      const creds = decryptJson<{ apiKey: string; username?: string }>(
-        lastfmConnection.secretCipher,
-      )
-      const username = creds.username ?? lastfmConnection.displayName
-      if (username) {
-        const client = new LastfmClient({ apiKey: creds.apiKey })
-        // One page per run keeps the job short; scrobbles accumulate over days anyway
-        // and the unique constraint makes overlapping pages harmless.
-        const { tracks } = await client.getRecentTracks(username, 1, 200)
-        for (const track of tracks) {
-          const created = await prisma.listeningEvent
-            .create({
-              data: {
-                source: 'LASTFM',
-                artistName: track.artist,
-                trackName: track.track,
-                playedAt: track.playedAt,
+      const client = new ListenbrainzClient({ token: connection.token })
+
+      // Resume from the newest listen already stored rather than re-reading history.
+      // ListenBrainz's min_ts is exclusive, so the checkpoint is the last event's second.
+      const newest = await prisma.listeningEvent.findFirst({
+        where: { source: 'LISTENBRAINZ' },
+        orderBy: { playedAt: 'desc' },
+        select: { playedAt: true },
+      })
+      const minTs = newest ? Math.floor(newest.playedAt.getTime() / 1000) : undefined
+
+      const listens = await client.listens(connection.username, {
+        count: 1000,
+        ...(minTs !== undefined ? { minTs } : {}),
+      })
+
+      for (const listen of listens) {
+        const created = await prisma.listeningEvent
+          .create({
+            data: {
+              source: 'LISTENBRAINZ',
+              artistName: listen.artistName,
+              trackName: listen.trackName,
+              playedAt: listen.playedAt,
+              // ListenBrainz reports what was played, not what was skipped. A listen is
+              // only submitted after a real play, so treating these as full plays is
+              // accurate rather than optimistic.
+              ...(listen.durationMs !== null ? { msPlayed: listen.durationMs } : {}),
+            },
+          })
+          .catch(() => null) // the unique constraint makes overlapping pages harmless
+        if (created) listenbrainzEvents += 1
+
+        // Record the MBIDs the listen came with. This is the part Last.fm could not do,
+        // and it is what makes the similarity lookups cheap later.
+        for (const mbid of listen.artistMbids) {
+          await prisma.artistNode
+            .upsert({
+              where: { name: listen.artistName },
+              create: {
+                name: listen.artistName,
+                normName: listen.artistName.toLowerCase().replace(/[^a-z0-9]+/g, ''),
+                mbid,
+                inLibrary: false,
               },
+              update: { mbid },
             })
             .catch(() => null)
-          if (created) lastfmEvents += 1
+          break // artist_credit can list several; the first is the primary
         }
-        await ctx.log('info', `Imported ${lastfmEvents} new scrobble(s) from Last.fm`)
       }
+
+      await ctx.log(
+        'info',
+        `Imported ${listenbrainzEvents} new listen(s) from ListenBrainz`,
+        { user: connection.username, resumedFrom: newest?.playedAt.toISOString() ?? 'the beginning' },
+      )
     } catch (err) {
-      await ctx.log('warn', 'Last.fm scrobble import failed', {
+      await ctx.log('warn', 'ListenBrainz listen import failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -190,11 +243,36 @@ export async function runTasteRefresh(ctx: JobRunContext): Promise<TasteRefreshR
 
   await ctx.log('info', 'Taste model refreshed', {
     navidromeEvents,
-    lastfmEvents,
+    listenbrainzEvents,
     tracksScored,
     artistsScored,
   })
-  return { navidromeEvents, lastfmEvents, tracksScored, artistsScored }
+  return { navidromeEvents, listenbrainzEvents, tracksScored, artistsScored }
+}
+
+/**
+ * The ListenBrainz connection, resolved to a usable username.
+ *
+ * The token is optional for similarity but required to read a user's own listens, and
+ * the username can be derived from the token rather than typed — one fewer thing to get
+ * wrong, and it proves the token works at the same time.
+ */
+async function listenbrainzConnection(): Promise<{ token?: string; username: string } | null> {
+  const row = await prisma.connection.findUnique({ where: { provider: 'listenbrainz' } })
+  if (!row?.enabled) return null
+
+  let token: string | undefined
+  if (row.secretCipher) {
+    try {
+      token = decryptJson<{ token?: string }>(row.secretCipher).token
+    } catch {
+      return null
+    }
+  }
+
+  const username = row.displayName ?? row.externalId
+  if (!username) return null
+  return { ...(token ? { token } : {}), username }
 }
 
 async function recomputeAffinity(
@@ -239,7 +317,7 @@ async function recomputeAffinity(
   let tracksScored = 0
 
   for (const track of tracks) {
-    // Events attached by id are authoritative; the GDPR export and Last.fm only carry
+    // Events attached by id are authoritative; the GDPR export and ListenBrainz only carry
     // names, so fall back to a name match for those.
     const own = byTrackId.get(track.id) ?? byNameKey.get(nameKey(track.artist, track.title)) ?? []
     if (own.length === 0) continue
@@ -310,10 +388,19 @@ export async function buildSimilarityGraph(
   }
 
   const bySource: Record<string, number> = {}
-  const record = async (from: string, to: string, source: string, weight: number) => {
+  // `toMbid` is optional because only ListenBrainz supplies one. When it does, it is
+  // stored — an artist that arrives as a graph neighbour today is a release-radar seed
+  // tomorrow, and having its MBID already means one less MusicBrainz round trip then.
+  const record = async (
+    from: string,
+    to: string,
+    source: string,
+    weight: number,
+    toMbid?: string,
+  ) => {
     if (!from.trim() || !to.trim() || from === to) return
     const fromNode = await upsertArtist(from)
-    const toNode = await upsertArtist(to)
+    const toNode = await upsertArtist(to, toMbid)
     await prisma.artistEdge.upsert({
       where: { fromId_toId_source: { fromId: fromNode, toId: toNode, source } },
       create: { fromId: fromNode, toId: toNode, source, weight },
@@ -322,30 +409,58 @@ export async function buildSimilarityGraph(
     bySource[source] = (bySource[source] ?? 0) + 1
   }
 
-  // ── Last.fm: the strongest source in the blend ─────────
-  const lastfmConnection = await prisma.connection.findUnique({ where: { provider: 'lastfm' } })
-  if (lastfmConnection?.enabled && lastfmConnection.secretCipher) {
-    try {
-      const creds = decryptJson<{ apiKey: string }>(lastfmConnection.secretCipher)
-      const client = new LastfmClient({ apiKey: creds.apiKey })
-      for (const [index, seed] of seeds.entries()) {
-        const similar = await client.getSimilarArtists(seed.name, 30)
-        for (const artist of similar) await record(seed.name, artist.name, 'LASTFM', artist.weight)
-        if (index % 20 === 0) {
-          await ctx.setProgress(index, seeds.length, `Last.fm: ${index}/${seeds.length}`)
+  // ── ListenBrainz: the strongest source in the blend ────
+  //
+  // Needs no token — similarity is open data — so this runs whether or not the owner
+  // connected an account. The token only affects the listen import in taste-refresh.
+  //
+  // Unlike Last.fm, ListenBrainz is addressed entirely by MBID. Seeds therefore have to
+  // be resolved through MusicBrainz first, which is why `mbid` is cached back onto the
+  // ArtistNode: the lookup happens once per artist ever, not once per graph rebuild, and
+  // the release radar reuses the same cached value.
+  try {
+    const lb = new ListenbrainzClient()
+    const mb = new MusicbrainzClient({ userAgent: MB_USER_AGENT })
+    let resolved = 0
+    let unresolved = 0
+
+    for (const [index, seed] of seeds.entries()) {
+      let mbid = seed.mbid
+      if (!mbid) {
+        const search = await mb.searchArtist(seed.name)
+        if (search) {
+          mbid = search.mbid
+          await prisma.artistNode.update({ where: { id: seed.id }, data: { mbid } })
         }
       }
-      await ctx.log('info', `Last.fm contributed ${bySource.LASTFM ?? 0} edges`)
-    } catch (err) {
-      await ctx.log('warn', 'Last.fm similarity failed', {
-        error: err instanceof Error ? err.message : String(err),
-      })
+      if (!mbid) {
+        unresolved += 1
+        continue
+      }
+      resolved += 1
+
+      const similar = await lb.similarArtists(mbid, { limit: 30 })
+      for (const artist of similar) {
+        await record(seed.name, artist.name, 'LISTENBRAINZ', artist.score, artist.mbid)
+      }
+
+      if (index % 20 === 0) {
+        await ctx.setProgress(index, seeds.length, `ListenBrainz: ${index}/${seeds.length}`)
+      }
     }
-  } else {
-    await ctx.log(
-      'warn',
-      'Last.fm is not connected. It is the only remaining source of real collaborative-filtering data in this blend, so mix quality will be noticeably worse without it.',
-    )
+
+    await ctx.log('info', `ListenBrainz contributed ${bySource.LISTENBRAINZ ?? 0} edges`, {
+      resolved,
+      unresolved,
+      note:
+        unresolved > 0
+          ? `${unresolved} artist(s) could not be resolved to a MusicBrainz id and were skipped — ListenBrainz addresses artists by MBID, not by name`
+          : undefined,
+    })
+  } catch (err) {
+    await ctx.log('warn', 'ListenBrainz similarity failed', {
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
 
   // ── Deezer: no auth, thinner data ──────────────────────
@@ -376,7 +491,7 @@ export async function buildSimilarityGraph(
   // ── Co-occurrence in the owner's own playlists ─────────
   const cooccurrence = await mineCooccurrence()
   for (const [pair, count] of cooccurrence) {
-    const [from, to] = pair.split(' ')
+    const [from, to] = pair.split(COOCCURRENCE_SEP)
     await record(from!, to!, 'COOCCURRENCE', count)
   }
   await ctx.log('info', `Co-occurrence contributed ${bySource.COOCCURRENCE ?? 0} edges`)
@@ -390,13 +505,22 @@ export async function buildSimilarityGraph(
 
 const artistIdCache = new Map<string, string>()
 
-async function upsertArtist(name: string): Promise<string> {
+async function upsertArtist(name: string, mbid?: string): Promise<string> {
   const cached = artistIdCache.get(name)
-  if (cached) return cached
+  // The cache is keyed on name only, so a cached node still gets its MBID filled in the
+  // first time one arrives — skipping that would strand the id until the next rebuild.
+  if (cached && !mbid) return cached
+
   const node = await prisma.artistNode.upsert({
     where: { name },
-    create: { name, normName: name.toLowerCase().replace(/[^a-z0-9]+/g, ''), inLibrary: false },
-    update: {},
+    create: {
+      name,
+      normName: name.toLowerCase().replace(/[^a-z0-9]+/g, ''),
+      inLibrary: false,
+      ...(mbid ? { mbid } : {}),
+    },
+    // Never overwrite an id we already hold with one from a weaker source.
+    update: mbid ? { mbid } : {},
   })
   artistIdCache.set(name, node.id)
   return node.id
@@ -430,7 +554,7 @@ async function mineCooccurrence(): Promise<Map<string, number>> {
         const a = artists[i]!
         const b = artists[j]!
         if (a === b) continue
-        const key = a < b ? `${a} ${b}` : `${b} ${a}`
+        const key = a < b ? `${a}${COOCCURRENCE_SEP}${b}` : `${b}${COOCCURRENCE_SEP}${a}`
         counts.set(key, (counts.get(key) ?? 0) + 1)
       }
     }
@@ -460,7 +584,7 @@ export async function runGenerateMixes(
   if (scoredTracks < 20) {
     // An honest empty state beats a fake one (§11). Six playlists sampled from nothing
     // would look like a working feature and be indistinguishable from random.
-    const message = `Only ${scoredTracks} tracks have any listening signal. Mixes need a taste model first — import the GDPR streaming history, connect Last.fm, or let Navidrome accumulate play counts.`
+    const message = `Only ${scoredTracks} tracks have any listening signal. Mixes need a taste model first — import the GDPR streaming history, connect ListenBrainz, or let Navidrome accumulate play counts.`
     await ctx.log('warn', message)
     return { mixes: [], discoveryQueued: 0, skipped: message }
   }
@@ -497,7 +621,7 @@ export async function runGenerateMixes(
 
   if (communities.length === 0) {
     const message =
-      'The artist graph has no edges yet, so there is nothing to cluster. Connect Last.fm and run a mix generation again.'
+      'The artist graph has no edges yet, so there is nothing to cluster. ListenBrainz similarity needs no token — check the connection and run a mix generation again.'
     await ctx.log('warn', message)
     return { mixes: [], discoveryQueued: 0, skipped: message }
   }
@@ -948,7 +1072,7 @@ export async function runReleaseRadar(ctx: JobRunContext): Promise<ReleaseRadarR
     take: 100,
   })
 
-  const mb = new MusicbrainzClient({ userAgent: 'Crate/0.1 (self-hosted library tool)' })
+  const mb = new MusicbrainzClient({ userAgent: MB_USER_AGENT })
   let releasesFound = 0
   const found: Array<{ artist: string; title: string; date: string }> = []
 

@@ -20,7 +20,7 @@ the connector disconnected. That is the one rule the whole design answers to.
 | **Post-process** | Verify → transcode policy → tag (including the harvested ISRC) → cover art → placement → dedupe check → register → one debounced Navidrome rescan. |
 | **Playlists** | Atomic `.m3u8` writes with mapped paths and `.missing.json` sidecars, plus a Subsonic push so they appear without waiting for a scan. |
 | **Duplicates** | Five grouping passes, quality-based keeper selection, dry run by default, trash instead of deletion, and a working undo. |
-| **Recommendations** | Six stable daily mixes from your own listening history and a blended artist graph, plus a free-text LLM curator whose every suggestion is checked against your actual library. |
+| **Recommendations** | Six stable daily mixes from your own listening history and an artist graph blended from ListenBrainz, Deezer, YouTube Music radios and your own co-occurrence, plus a free-text LLM curator whose every suggestion is checked against your actual library. |
 
 ---
 
@@ -28,7 +28,7 @@ the connector disconnected. That is the one rule the whole design answers to.
 
 - Docker and Docker Compose
 - A Spotify app (client ID only — PKCE needs no secret), while your Premium lasts
-- Optional: Navidrome, Last.fm API key, AcoustID key, Ollama, Lidarr
+- Optional: Navidrome, a ListenBrainz token, AcoustID key, Ollama, Lidarr
 
 The worker image carries `ffmpeg`, `ffprobe`, `fpcalc` and `yt-dlp`. They are runtime
 dependencies of the post-processing and fingerprint queues, so a worker image without them
@@ -100,7 +100,7 @@ packages/db/       Prisma schema + generated client
 packages/core/     Pure domain logic, no I/O — normalization, matching, scoring, dedupe,
                    affinity, graph clustering, mix sampling. This is where the tests live.
 packages/providers/    Download adapters behind one interface
-packages/integrations/ Spotify, Subsonic, Last.fm, Deezer, YouTube Music, MusicBrainz,
+packages/integrations/ Spotify, Subsonic, ListenBrainz, Deezer, YouTube Music, MusicBrainz,
                        AcoustID, Cover Art Archive, LLM backends
 ```
 

@@ -96,7 +96,7 @@ packages/
   db/           Prisma schema + client (shared by web and worker)
   core/         Domain logic, no I/O: normalization, matching, scoring, dedupe, mix generation
   providers/    Download provider adapters behind one interface
-  integrations/ Spotify, Navidrome/Subsonic, Last.fm, Deezer, YouTube Music, MusicBrainz, AcoustID, Lidarr
+  integrations/ Spotify, Navidrome/Subsonic, ListenBrainz, Deezer, YouTube Music, MusicBrainz, AcoustID, Lidarr
 ```
 
 - `packages/core` is pure functions with no network or filesystem access, and it's where the test suite lives. Matching and dedupe logic must be testable against fixtures without spinning up anything.
@@ -279,7 +279,7 @@ model DuplicateMember {
 // ── Taste and recommendations
 model ListeningEvent {
   id        String @id @default(cuid())
-  source    String   // SPOTIFY_EXPORT | SPOTIFY_API | NAVIDROME | LASTFM
+  source    String   // SPOTIFY_EXPORT | SPOTIFY_API | NAVIDROME | LISTENBRAINZ
   trackId   String?
   artistName String
   trackName  String
@@ -302,7 +302,7 @@ model ArtistEdge {
   id       String @id @default(cuid())
   fromId   String
   toId     String
-  source   String   // LASTFM | DEEZER | YTM | COOCCURRENCE | LLM
+  source   String   // LISTENBRAINZ | DEEZER | YTM | COOCCURRENCE | LLM
   weight   Float
   @@unique([fromId, toId, source])
 }
@@ -467,16 +467,23 @@ Spotify's recommendation endpoint is gone and my subscription is going away, so 
 - Full Spotify streaming history from the GDPR export — this is the richest signal by far, with timestamps and `ms_played`. Treat `ms_played < 30000` as a skip. Import it during setup and tell me to request it early, since it takes weeks to arrive.
 - Spotify top tracks/artists across all three time ranges, and recently-played, harvested while the connector lives.
 - **Navidrome play counts, star ratings and last-played**, pulled continuously via Subsonic `getStarred`/`getAlbumList2`/`getNowPlaying`. After Spotify is gone this becomes the live signal, so it needs to work from day one.
-- Optional Last.fm scrobbles if I connect an account.
+- Optional ListenBrainz listens if I connect an account. **(Corrected 2026-08-14 — see the note below.)**
 
 Compute per-artist and per-track `affinity`: play count weighted by an exponential recency decay (half-life ~90 days, configurable), boosted by stars, penalized by skip rate.
 
 **Similarity graph.** Populate `ArtistEdge` from several sources and blend the weights:
-- **Last.fm** `artist.getSimilar` and `track.getSimilar` — free key, real collaborative-filtering data, still the best open source of "people who like X also like Y"
+- **ListenBrainz** similar-artists and similar-recordings — real collaborative-filtering data derived from listening sessions, no key required, and keyed on MBIDs rather than names. **(Corrected 2026-08-14 — see the note below.)**
 - **Deezer public API** — `/artist/{id}/related`, no auth required
 - **YouTube Music** via `ytmusicapi` — `get_watch_playlist(radio=True)` returns YTM's actual radio sequence, which is the closest freely available thing to Daily Mix quality; harvest co-occurrence from radios seeded on my top tracks
 - **Co-occurrence** mined from my own playlists and listening sessions — artists that repeatedly appear near each other in my history are related *for me*, which generic data can't know
-- Explicitly **do not** build on ListenBrainz. I've tried it and don't want it.
+- ~~Explicitly **do not** build on ListenBrainz. I've tried it and don't want it.~~
+
+> **Correction, 2026-08-14 (owner).** This instruction was based on a misunderstanding and
+> is withdrawn. The objection was to the *Navidrome scrobbling* setup — multi-scrobbler and
+> the Navidrome scrobble plugin — not to ListenBrainz as a data source. **ListenBrainz is
+> now the primary similarity source, replacing Last.fm entirely.** See `docs/DECISIONS.md`
+> D8 for what changed and why, including the endpoint that does not exist despite being the
+> obvious guess.
 
 **Mix generation** (nightly job):
 - Run community detection (Louvain) over the subgraph of library artists weighted by affinity → natural clusters. These become stable mix slots 1–6, so "Mix 3" keeps meaning roughly the same thing week to week, the way Daily Mix does.

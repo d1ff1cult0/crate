@@ -10,7 +10,7 @@
  */
 
 import { prisma } from '@crate/db'
-import { LastfmClient, SubsonicClient } from '@crate/integrations'
+import { ListenbrainzClient, SubsonicClient } from '@crate/integrations'
 import { z } from 'zod'
 import { encryptJson } from '../../../lib/crypto'
 
@@ -24,9 +24,14 @@ const NavidromeSchema = z.object({
   password: z.string().min(1),
 })
 
-const LastfmSchema = z.object({
-  provider: z.literal('lastfm'),
-  apiKey: z.string().min(1),
+/**
+ * ListenBrainz. The token is OPTIONAL: artist and recording similarity is open data and
+ * needs no auth at all, so the connection is useful with nothing but the box ticked. A
+ * token additionally imports the user's own listens into the taste model.
+ */
+const ListenbrainzSchema = z.object({
+  provider: z.literal('listenbrainz'),
+  token: z.string().optional(),
   username: z.string().optional(),
 })
 
@@ -49,7 +54,7 @@ const OllamaSchema = z.object({
 
 const BodySchema = z.discriminatedUnion('provider', [
   NavidromeSchema,
-  LastfmSchema,
+  ListenbrainzSchema,
   AcoustidSchema,
   LidarrSchema,
   OllamaSchema,
@@ -103,10 +108,20 @@ export async function POST(request: Request) {
       }).ping()
       if (!ping.ok) verifyError = 'Navidrome rejected those credentials.'
       else displayName = `${ping.type ?? 'navidrome'} ${ping.serverVersion ?? ''}`.trim()
-    } else if (body.provider === 'lastfm') {
-      const health = await new LastfmClient({ apiKey: body.apiKey }).health()
+    } else if (body.provider === 'listenbrainz') {
+      const client = new ListenbrainzClient({ token: body.token })
+      const health = await client.health()
       if (!health.ok) verifyError = health.detail
-      else displayName = body.username ?? 'connected'
+      else if (body.token) {
+        // Derive the username from the token rather than making the owner type it —
+        // it is one fewer thing to get wrong, and the listen import needs it exactly
+        // right or it silently returns nothing.
+        const validated = await client.validateToken()
+        if (!validated.valid) verifyError = validated.detail
+        else displayName = validated.username ?? body.username ?? null
+      } else {
+        displayName = body.username ?? null
+      }
     }
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err)

@@ -32,7 +32,7 @@ packages/
   db/           Prisma schema + generated client (shared by web and worker)
   core/         Pure domain logic, no I/O — normalization, matching, scoring, dedupe, mixes
   providers/    Download provider adapters behind one interface
-  integrations/ Spotify, Navidrome/Subsonic, Last.fm, Deezer, YouTube Music, MusicBrainz, AcoustID, Lidarr
+  integrations/ Spotify, Navidrome/Subsonic, ListenBrainz, Deezer, YouTube Music, MusicBrainz, AcoustID, Lidarr
 docs/
   spotify-api-state.md   Verified API surface, date-stamped
   plan.md                Phases, risks, design disagreements
@@ -70,7 +70,7 @@ docker compose logs -f worker
 ## Conventions
 
 - **TypeScript strict.** No `any` at boundaries; parse, don't assert.
-- **Zod at every boundary** — Spotify/Subsonic/Last.fm responses, uploads, LLM output, config, env. External shapes are never trusted.
+- **Zod at every boundary** — Spotify/Subsonic/ListenBrainz responses, uploads, LLM output, config, env. External shapes are never trusted.
 - **Server Actions for mutations.** Route handlers only for webhooks, SSE, OAuth callback.
 - **Queues, one per concern**, each with its own concurrency and rate limits: `spotify-sync`, `spotify-isrc-backfill`, `library-scan`, `match`, `download`, `postprocess`, `fingerprint`, `playlist-write`, `recommend`.
 - **Idempotency everywhere.** Deterministic BullMQ job IDs; re-running any job converges rather than duplicating.
