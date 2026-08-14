@@ -373,6 +373,78 @@ be silently wrong, and claiming it was verified when it was not would be worse t
 the step as incomplete. Reordering the list does not invalidate it — order carries no
 meaning, since lookup is longest-prefix-wins.
 
+### A30. The library count discrepancy was a real bug, and the numbers now reconcile
+
+**Investigated with evidence, not inference.** The reported discrepancy was "UI says
+31,105 tracks indexed, Navidrome says 36,169 songs, Crate says 36,194 files".
+
+**Measured:** 36,237 audio files on disk under `MUSIC_ROOT`, 36,237 `LibraryFile` rows.
+The scan index is exact — no stale records, no missing rows. Navidrome's figure is its own
+song count taken mid-scan, and Navidrome counts **songs, i.e. files**.
+
+So one half was a labelling problem: the Overview showed the **recording** count next to
+Navidrome's **song** count, which makes a perfectly correct library look like it has lost
+5,000 tracks. Files and recordings are now separate, labelled readouts, and the files
+readout says outright that it is what should agree with Navidrome.
+
+**The other half was a genuine data-corruption bug.** `registerFile` resolves a file's
+`LibraryTrack` by ISRC first. A scene tagger had written `ISRC=PMEDIA` into 2,585 files,
+so 2,585 different songs by different artists collapsed into one track called
+"Good Day". Fourteen junk values in total — `PMEDIA`, `P.M.E.D.I.A`, `WWW.iM1MUSIC.NET`,
+`SRC`, `www.viperial.com`, `http:`, `WavePad Masters Edition © NCH Software`, catalogue
+numbers, barcodes, `000000000000` — absorbed **2,868 files that are really 2,805 distinct
+recordings**.
+
+The damage was not confined to a count. Those 2,804 other songs were invisible to
+matching, so music the owner already owned was being reported as missing, which is the
+precise failure this app exists to prevent.
+
+**Fixed** by validating the IFPI structure before trusting the tag (`cleanIsrc`), with
+hyphenated forms normalised first so a correctly-written `BE-C46-14-03118` still passes,
+and all-zero placeholders rejected. `repair-isrc` re-derives each affected file's identity
+from its own tags. Result on the live instance: **31,169 → 33,892 recordings**, zero
+invalid ISRCs remaining, and the following match sweep moved 63 tracks straight from
+missing to matched. Files present stayed exactly equal to files on disk throughout.
+
+### A31. Coverage that adds up, and why "download all missing" queues fewer
+
+Source tracks that had never been evaluated have no `Match` row, so they appeared in
+neither the matched nor the missing figure and the parts never summed to the whole. The
+Overview now puts every wanted track in exactly one state and carries a `reconciles` flag
+it surfaces when they do not add up.
+
+The "why did it only queue 273?" question has a concrete answer: a track that already has
+a download request — succeeded, queued, in flight, on hold, failed or abandoned — is not
+requested again. The panel now states the queueable number, the blocked number and the
+reason, and the button is labelled with what it will actually do. Verified live: with
+4,378 missing and 4,375 already carrying a request, it correctly offers 3.
+
+### A32. Duplicates: the missing setting, and direct deletion
+
+**The setting nobody could find was `dedupeDryRunOnly`.** It defaults to on, it blocks
+every apply, and it was exposed **nowhere in the interface** — a safety rail that had
+become a dead end. It is now on the Settings page alongside `downloadEnabled` and
+`trashRetentionEnabled`.
+
+**Chose:** on the owner's explicit instruction, the stage → plan → apply flow is replaced
+by one confirmed action — delete everything at 0.95 confidence or above, stating the file
+count and the gigabytes before it does anything and requiring the word DELETE.
+
+0.95 is not arbitrary. It sits above the FUZZY tiers (0.85, 0.70) and below HASH (1.0),
+FINGERPRINT (0.99), ISRC (0.97) and MBID (0.96), so a bulk delete only ever removes copies
+proven identical by audio, fingerprint or a shared identifier. Nothing decided by name
+similarity is included, and variants are excluded at every threshold.
+
+**"Delete" still means moved to `TRASH_ROOT` with a manifest**, and that is not a softened
+version of the instruction. The move is a rename, so it is exactly as fast as unlinking,
+and it preserves the audit trail and working Undo the owner asked to keep. Unlinking would
+buy nothing and forfeit both.
+
+**Verified in production, by the owner rather than by me:** 673 groups resolved — 202
+HASH, 8 FINGERPRINT, 463 ISRC — removing 751 files and 3,591 MB. Zero variants and zero
+groups below 0.95 were touched, and the whole thing sits in one trash operation that is
+still undoable.
+
 ### A15. Postponed to a later pass
 ~~Recorded so they aren't mistaken for finished work: provider adapters beyond the interface itself, the LLM curator, mix generation, release radar, the duplicates review UI, the first-run wizard, and the command palette.~~
 
