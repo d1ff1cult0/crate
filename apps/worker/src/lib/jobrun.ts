@@ -55,23 +55,64 @@ export class JobRunContext {
     this.redis = redis
   }
 
+  /**
+   * Begin (or resume) the run record for one job.
+   *
+   * `JobRun` is unique on `(queue, jobId)` and BullMQ reuses the job id across retries —
+   * so the obvious `create` here threw "Unique constraint failed on the fields:
+   * (queue, jobId)" on the *second* attempt of anything that failed once. That is a
+   * uniquely bad failure mode: it replaces the real error with a bookkeeping one, so the
+   * log shows a Prisma constraint violation instead of whatever actually went wrong, and
+   * every remaining retry dies the same way. Found in production when a broken index
+   * made the fingerprint queue fail on every file.
+   *
+   * Retrying therefore reuses the row rather than fighting the constraint. Previous
+   * logs are deliberately KEPT and appended to — when a job is on its third attempt, the
+   * first two failures are exactly what you came to read.
+   */
   static async start(
     queue: QueueName,
     name: string,
     payload?: Record<string, unknown>,
     bullJobId?: string,
   ): Promise<JobRunContext> {
-    const row = await prisma.jobRun.create({
-      data: {
-        queue,
+    const fresh = {
+      queue,
+      name,
+      status: 'RUNNING' as const,
+      ...(bullJobId ? { jobId: bullJobId } : {}),
+      ...(payload ? { payload: payload as object } : {}),
+    }
+
+    // A null jobId is not covered by the unique constraint (Postgres treats NULLs as
+    // distinct), so an untracked job just gets its own row.
+    if (!bullJobId) {
+      const row = await prisma.jobRun.create({ data: fresh })
+      const ctx = new JobRunContext(row.id, queue, name, getRedis())
+      await ctx.log('info', `${name} started`)
+      return ctx
+    }
+
+    const row = await prisma.jobRun.upsert({
+      where: { queue_jobId: { queue, jobId: bullJobId } },
+      create: fresh,
+      update: {
         name,
         status: 'RUNNING',
-        ...(bullJobId ? { jobId: bullJobId } : {}),
+        progress: 0,
+        // Clearing these matters: a row left with the previous attempt's endedAt and
+        // error would render in the UI as a finished, failed job while it is running.
+        endedAt: null,
+        error: null,
         ...(payload ? { payload: payload as object } : {}),
       },
     })
+
     const ctx = new JobRunContext(row.id, queue, name, getRedis())
-    await ctx.log('info', `${name} started`)
+    // A row that already carries log lines is one that has run before. No extra query
+    // needed, and the label is cosmetic — the lines themselves are the useful part.
+    const isRetry = Array.isArray(row.logsJson) && row.logsJson.length > 0
+    await ctx.log('info', isRetry ? `${name} retrying after an earlier attempt` : `${name} started`)
     return ctx
   }
 

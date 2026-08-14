@@ -138,6 +138,7 @@ The high-cost traps, all verified 2026-08-14:
 The worker image needs **`ffmpeg`/`ffprobe`**, **`fpcalc`** (chromaprint), and whatever `yt-dlp` requires. They're runtime dependencies of the postprocess and fingerprint queues — a worker image without them fails at job time, not at boot.
 
 - `contentHash` hashes the **audio stream** (`ffmpeg -map 0:a -f md5 -`), not the file, so retagging doesn't look like a new file.
+- **Never put `fingerprint` in a btree index.** A chromaprint for a real track runs 2–3 KB and Postgres rejects any btree entry over 2704 bytes — and it fails on *insert*, not on index creation, so it looks fine until fingerprints start landing. Exact-match lookups go through `LibraryFile.fingerprintHash` (md5, indexed); the full value is compared in application code where there's no size limit. Short synthetic fixtures compress far below the limit, so this will not reproduce with a test tone.
 - Fingerprinting is CPU-heavy: separate lower-priority queue, resumable, throttled.
 - AcoustID: rate-limit to 3 req/s per their terms; the API key is optional and its absence must skip cleanly.
 

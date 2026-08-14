@@ -58,7 +58,9 @@ services:
       - ${MUSIC_ROOT:-./data/music}:/music
       - ${STAGING_ROOT:-./data/staging}:/staging
       - ${TRASH_ROOT:-./data/trash}:/trash
-    networks: [crate-net, navidrome_default]
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+    networks: [crate-net, navidrome_default, arr-net]
 
   worker:
     build:
@@ -80,7 +82,9 @@ services:
       - ${MUSIC_ROOT:-./data/music}:/music
       - ${STAGING_ROOT:-./data/staging}:/staging
       - ${TRASH_ROOT:-./data/trash}:/trash
-    networks: [crate-net, navidrome_default]
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+    networks: [crate-net, navidrome_default, arr-net]
 
   # Any provider that must be VPN-routed runs under gluetun and therefore has NO
   # ports of its own — it publishes through gluetun. Reach it at gluetun's published
@@ -95,4 +99,6 @@ networks:
   crate-net:
     driver: bridge
   navidrome_default:
+    external: true
+  arr-net:
     external: true

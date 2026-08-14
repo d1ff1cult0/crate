@@ -30,4 +30,11 @@ RUN pnpm --filter @crate/db generate
 # Fail fast if the audio tooling is missing rather than at first job.
 RUN ffprobe -version >/dev/null && fpcalc -version >/dev/null
 
-CMD ["pnpm", "--filter", "@crate/worker", "start"]
+# Apply migrations before the worker starts, and ONLY here — the web container must not
+# also run them, or two containers race for the migration lock on every deploy.
+#
+# `migrate deploy` is the non-interactive path: it applies pending migrations and never
+# resets or prompts. It is idempotent, so a restart with nothing pending is a no-op.
+# Without this a shipped migration only lands if someone remembers to run it by hand,
+# and the failure that follows looks like an application bug rather than a missed step.
+CMD ["sh", "-c", "pnpm --filter @crate/db deploy && pnpm --filter @crate/worker start"]

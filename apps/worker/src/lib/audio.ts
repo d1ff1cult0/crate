@@ -18,6 +18,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { rename, unlink } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 
@@ -189,6 +190,21 @@ export async function hashAudioStream(path: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * Digest of a chromaprint, for `LibraryFile.fingerprintHash`.
+ *
+ * The fingerprint itself is 1–3 KB and cannot go in a btree index (Postgres caps an
+ * entry at 2704 bytes), so exact-match lookups go through this instead. md5 is used as a
+ * lookup key, never as a security primitive — and a false positive would only mean two
+ * files were compared, which is what the caller was going to do anyway.
+ *
+ * Must stay in step with the `md5()` call in the fingerprintHash migration, so rows
+ * written before and after that migration agree.
+ */
+export function fingerprintDigest(fingerprint: string): string {
+  return createHash('md5').update(fingerprint).digest('hex')
 }
 
 export async function computeFingerprint(

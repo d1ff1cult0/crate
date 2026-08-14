@@ -229,7 +229,15 @@ model LibraryFile {
   durationMs     Int?
   mtime          DateTime
   contentHash    String? // hash of the AUDIO STREAM, not the container
-  fingerprint    String? // chromaprint
+  fingerprint    String? // chromaprint — NOT indexed, see fingerprintHash
+  /// md5 of `fingerprint`, because the fingerprint itself cannot be indexed.
+  ///
+  /// A chromaprint for a normal-length track is 1–3 KB of base64, and Postgres refuses
+  /// any btree index entry over 2704 bytes — so `@@index([fingerprint])` did not fail at
+  /// migration time, it failed at INSERT time, on every file, once fingerprints started
+  /// landing. A fixed-width digest indexes fine and answers the only question the index
+  /// was ever asked: "is this exact fingerprint already in the library?"
+  fingerprintHash String?
   tagsJson       Json
   qualityScore   Int      @default(0)
   sourceProvider String?
@@ -240,7 +248,7 @@ model LibraryFile {
   dupes   DuplicateMember[]
 
   @@index([contentHash])
-  @@index([fingerprint])
+  @@index([fingerprintHash])
   @@index([trackId])
   @@index([missingSince])
 }

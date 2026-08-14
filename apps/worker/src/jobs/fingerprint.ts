@@ -18,6 +18,7 @@
 
 import { prisma } from '@crate/db'
 import { AcoustidClient, MusicbrainzClient } from '@crate/integrations'
+import { fingerprintDigest } from '../lib/audio.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { computeFingerprint } from './scan.js'
 
@@ -47,7 +48,12 @@ export async function runFingerprintFile(
 
   await prisma.libraryFile.update({
     where: { id: fileId },
-    data: { fingerprint: result.fingerprint },
+    data: {
+      fingerprint: result.fingerprint,
+      // The indexed digest is written alongside the fingerprint, never separately —
+      // a row with one and not the other is invisible to collision lookups.
+      fingerprintHash: fingerprintDigest(result.fingerprint),
+    },
   })
 
   const apiKey = process.env.ACOUSTID_API_KEY

@@ -221,6 +221,65 @@ again and confirm nothing changed.
   like real metadata. An unknown track number now blanks the disc as well and the whole
   prefix collapses, leaving just the title.
 
+### A28. Two bugs found running on the real server, and how they hid each other
+
+Both surfaced during the owner's first full library scan on `d1ff1cult-server`. They are
+recorded together because the second one **concealed** the first, which is the more useful
+lesson.
+
+**1. A chromaprint cannot go in a btree index.** `@@index([fingerprint])` was in the schema
+from the first migration. It created without complaint, because Postgres only checks entry
+size on *insert* — and nothing had a fingerprint until the scan started producing them.
+Then every single file failed:
+
+```
+index row size 3480 exceeds btree version 4 maximum 2704
+for index "LibraryFile_fingerprint_idx"
+```
+
+Measured here: a 5-minute track fingerprints to **2744 bytes**, against a 2704-byte limit.
+A 45-second sine wave produces only 186 bytes, which is exactly why this never showed up in
+testing — synthetic fixtures compress far better than music does.
+
+**Chose:** drop that index, add `fingerprintHash` (md5 of the fingerprint) and index that.
+The full fingerprint stays in its column. The index only ever answered "is this exact
+fingerprint already in the library?", and a fixed-width digest answers the same question;
+dedupe grouping still compares the real values in application code, where there is no size
+limit at all. Postgres's `md5()` and Node's `createHash('md5')` agree, so the migration's
+backfill and the worker's writes produce identical digests — verified, not assumed.
+
+Migration `20260814120000_fingerprint_hash_index` is additive: no column dropped, no row
+deleted, so §12's "ask before a destructive migration" does not apply.
+
+**2. A retried job could not write its own `JobRun` row.** `JobRun` is unique on
+`(queue, jobId)` and `JobRunContext.start` used `create`. BullMQ reuses the job id across
+retries, so the *second* attempt of anything that failed once died with
+`Unique constraint failed on the fields: (queue, jobId)`.
+
+This is a nastier bug than it looks, and worse than the one it was sitting on top of: it
+**replaces the real error with a bookkeeping one**. The owner's logs showed a Prisma
+constraint violation, not the index failure that actually caused it, and every remaining
+retry died the same way. Any job that fails twice for any reason would have hit this.
+
+**Chose:** upsert on the compound unique, reusing the row and clearing `endedAt`/`error`
+so a retry does not render as an already-finished failure. Previous attempts' log lines are
+deliberately **kept and appended to** — on a third attempt, the first two failures are
+precisely what you came to read.
+
+**3. Migrations now run on worker boot.** There was no `migrate deploy` anywhere in the
+container startup, so a shipped migration only landed if someone remembered to run it by
+hand — and the failure that follows looks like an application bug rather than a missed
+step. The worker's `CMD` now runs `prisma migrate deploy` first. Only the worker does this;
+if the web container did it too, the two would race for the migration lock on every deploy.
+
+**Known, not fixed — `JobRun` growth.** The scanner enqueues one fingerprint job per new
+file, and §4 requires every job to write a `JobRun` row, so a first full scan of a large
+library produces one row per file. Nothing breaks — the queries the UI runs are indexed and
+bounded — but the table grows without limit and nothing prunes it. A retention job for
+succeeded runs (keeping every failed and paused one, which are the debugging surface) is
+the obvious answer. **Left for the owner to decide**, since it is a behaviour change to how
+much history is kept rather than a bug.
+
 ### A15. Postponed to a later pass
 ~~Recorded so they aren't mistaken for finished work: provider adapters beyond the interface itself, the LLM curator, mix generation, release radar, the duplicates review UI, the first-run wizard, and the command palette.~~
 

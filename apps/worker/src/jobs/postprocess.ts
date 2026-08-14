@@ -32,6 +32,7 @@ import {
   computeFingerprint,
   decideTranscode,
   embedCoverArt,
+  fingerprintDigest,
   hashAudioStream,
   probeAudio,
   transcode,
@@ -435,7 +436,10 @@ async function findCollision(
 ) {
   const or = []
   if (contentHash) or.push({ contentHash })
-  if (fingerprint) or.push({ fingerprint })
+  // Matched on the indexed digest, not the fingerprint itself — the fingerprint is far
+  // too large for a btree index and querying it directly would be a sequential scan of
+  // the whole library on every download.
+  if (fingerprint) or.push({ fingerprintHash: fingerprintDigest(fingerprint) })
   if (or.length === 0) return null
 
   return prisma.libraryFile.findFirst({

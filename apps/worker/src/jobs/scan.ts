@@ -17,7 +17,12 @@ import { extname, join } from 'node:path'
 import { normalizeTrack, qualityScore } from '@crate/core'
 import { prisma } from '@crate/db'
 import { parseFile } from 'music-metadata'
-import { computeFingerprint, ffprobeDuration, hashAudioStream } from '../lib/audio.js'
+import {
+  computeFingerprint,
+  ffprobeDuration,
+  fingerprintDigest,
+  hashAudioStream,
+} from '../lib/audio.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings } from '../lib/settings.js'
@@ -212,7 +217,10 @@ export async function registerFile(
   const data = {
     trackId: track.id,
     ...(extras.sourceProvider ? { sourceProvider: extras.sourceProvider } : {}),
-    ...(extras.fingerprint ? { fingerprint: extras.fingerprint } : {}),
+    // Fingerprint and its indexed digest are always written together.
+    ...(extras.fingerprint
+      ? { fingerprint: extras.fingerprint, fingerprintHash: fingerprintDigest(extras.fingerprint) }
+      : {}),
     format: file.format,
     bitrate: file.bitrate ?? null,
     sampleRate: file.sampleRate ?? null,
