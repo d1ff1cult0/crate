@@ -13,6 +13,7 @@
     "@crate/core": "workspace:*",
     "@crate/db": "workspace:*",
     "@crate/integrations": "workspace:*",
+    "@crate/providers": "workspace:*",
     "bullmq": "^5.34.9",
     "ioredis": "^5.4.2",
     "music-metadata": "^10.7.0",

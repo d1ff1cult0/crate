@@ -20,7 +20,11 @@ export const SettingsSchema = z.object({
   stagingRoot: z.string().default('/staging'),
   trashRoot: z.string().default('/trash'),
   pathMappings: z.array(PathMappingSchema).default([]),
-  playlistTemplate: z.string().default('{albumartist}/{album} ({year})/{disc}-{track:02} {title}.{ext}'),
+  // Where a post-processed download lands under MUSIC_ROOT (§7.6 step 5). Named for
+  // placement, not playlists — it has nothing to do with m3u output.
+  placementTemplate: z
+    .string()
+    .default('{albumartist}/{album} ({year})/{disc}-{track:02} {title}.{ext}'),
   m3uAbsolutePaths: z.boolean().default(false),
 
   // ── Spotify (docs/spotify-api-state.md finding D) ───────
@@ -43,6 +47,35 @@ export const SettingsSchema = z.object({
   scanConcurrency: z.number().int().min(1).max(16).default(4),
   fingerprintConcurrency: z.number().int().min(1).max(8).default(2),
   fingerprintEnabled: z.boolean().default(true),
+
+  // ── Acquisition (§7.5) ──────────────────────────────────
+  downloadEnabled: z.boolean().default(true),
+  downloadMinBitrateKbps: z.number().int().default(0),
+  // Providers are keyed by adapter name. Absent = adapter defaults apply, so a new
+  // adapter works before it has ever been configured.
+  providers: z
+    .record(
+      z.object({
+        enabled: z.boolean().default(true),
+        priority: z.number().int().optional(),
+        concurrency: z.number().int().optional(),
+      }),
+    )
+    .default({}),
+
+  // ── Post-processing (§7.6) ──────────────────────────────
+  // "Never re-encode a lossless source. Optionally normalize container/format for lossy
+  // sources; default off." The lossless guard is enforced in code, not here.
+  transcodeNormalizeLossy: z.boolean().default(false),
+  transcodeTargetFormat: z.string().default('mp3'),
+  transcodeBitrateKbps: z.number().int().default(320),
+  // Verification tolerances. Looser than the matcher's on purpose — see audio.ts.
+  verifyDurationToleranceMs: z.number().int().default(8000),
+  verifyMinDurationMs: z.number().int().default(20_000),
+  verifyFullDecode: z.boolean().default(true),
+  coverArtEnabled: z.boolean().default(true),
+  // One scan for a burst of downloads, never one per file (§7.6 step 7).
+  navidromeScanDebounceMs: z.number().int().default(120_000),
 
   // ── Dedupe (§7.7) ───────────────────────────────────────
   // Dry run is the default and destructive application stays opt-in (DECISIONS A13).
@@ -67,7 +100,10 @@ export const SettingsSchema = z.object({
   llmEnabled: z.boolean().default(true),
   llmBackend: z.enum(['ollama', 'anthropic']).default('ollama'),
   llmEndpoint: z.string().default('http://localhost:11434'),
-  llmModel: z.string().default('gemma3'),
+  // Defaults to the model actually installed on this box, checked 2026-08-14. The
+  // health check matches on prefix, so a default naming a model Ollama does not have
+  // would report the curator as unavailable rather than merely unconfigured.
+  llmModel: z.string().default('gemma4:e4b-it-qat'),
 })
 
 export type Settings = z.infer<typeof SettingsSchema>

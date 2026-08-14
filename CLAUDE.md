@@ -46,14 +46,13 @@ docs/
 
 ## Commands
 
-*(Populated as the scaffold lands — placeholders below reflect the intended shape, not working commands yet.)*
-
 ```bash
 pnpm dev              # web + worker in watch mode
-pnpm dev:web
+pnpm dev:web          # PORT overrides the default 3000
 pnpm dev:worker
 pnpm build
-pnpm test             # vitest, packages/core
+pnpm test             # vitest across core, integrations and providers
+pnpm test:core        # core only
 pnpm test:watch
 pnpm typecheck        # tsc --noEmit across the workspace
 pnpm lint

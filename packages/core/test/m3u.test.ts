@@ -127,6 +127,22 @@ describe('renderPlacement', () => {
     expect(out).toBe('A/B/1-01 C.flac')
   })
 
+  it('drops the whole disc/track prefix when there is no track number', () => {
+    // "1-00 Title" would look like real metadata. A downloaded single often has no
+    // track number at all, and inventing one is worse than omitting it.
+    const out = renderPlacement(DEFAULT_PLACEMENT_TEMPLATE, {
+      albumartist: 'A', artist: 'A', album: 'B', year: 2020, title: 'C', ext: 'opus',
+    })
+    expect(out).toBe('A/B (2020)/C.opus')
+  })
+
+  it('defaults the disc to 1 when the track number is known but the disc is not', () => {
+    const out = renderPlacement(DEFAULT_PLACEMENT_TEMPLATE, {
+      albumartist: 'A', artist: 'A', album: 'B', year: 2020, track: 7, title: 'C', ext: 'flac',
+    })
+    expect(out).toBe('A/B (2020)/1-07 C.flac')
+  })
+
   it('sanitizes each field independently so slashes cannot escape the template', () => {
     const out = renderPlacement('{albumartist}/{title}.{ext}', {
       artist: 'AC/DC', albumartist: 'AC/DC', title: 'Back/Slash', ext: 'flac',

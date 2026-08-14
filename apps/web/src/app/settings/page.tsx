@@ -7,6 +7,7 @@
  */
 
 import { prisma } from '@crate/db'
+import { BackupPanel } from '../../components/backup-panel'
 import { Connections } from '../../components/connections'
 import { PathSettings } from '../../components/path-settings'
 import { HarvestPanel } from '../../components/harvest-panel'
@@ -65,6 +66,10 @@ export default async function SettingsPage({
           this has to be set explicitly rather than detected. If tracks come back looking
           unavailable, this is the first thing to check.
         </p>
+      </Panel>
+
+      <Panel title="Backup and restore">
+        <BackupPanel />
       </Panel>
     </div>
   )

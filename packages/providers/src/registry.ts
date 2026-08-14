@@ -14,7 +14,7 @@
  *    explained after the fact.
  */
 
-import { pickBestCandidate, rankCandidates, type ScoredCandidate } from '@crate/core'
+import { rankCandidates, type ScoredCandidate } from '@crate/core'
 import type {
   AttemptOutcome,
   Candidate,
@@ -24,6 +24,22 @@ import type {
   TrackQuery,
 } from './types.js'
 
+/**
+ * A score joined back to the candidate it describes.
+ *
+ * `ScoredCandidate` alone carries only an id, and §7.5 asks for a log that explains why
+ * a wrong track won — which needs the title, artist, album and duration that lost to it,
+ * not a list of opaque provider ids.
+ */
+export interface ScoredEntry extends ScoredCandidate {
+  title: string
+  artist: string
+  album?: string | undefined
+  durationMs?: number | undefined
+  format?: string | undefined
+  bitrate?: number | undefined
+}
+
 export interface AttemptRecord {
   provider: string
   query: string
@@ -31,7 +47,7 @@ export interface AttemptRecord {
   detail?: string
   durationMs: number
   /** Every candidate with its score and reasons, winner or not. */
-  scored: ScoredCandidate[]
+  scored: ScoredEntry[]
   chosen?: Candidate
 }
 
@@ -118,7 +134,13 @@ export async function acquireTrack(
       durationMs: query.durationMs ?? null,
     }
     const scoringOpts = opts.minBitrateKbps ? { minBitrateKbps: opts.minBitrateKbps } : {}
-    const scored = rankCandidates(
+    const byId = new Map(candidates.map((c) => [c.id, c]))
+
+    // Ranked once. `rankCandidates` already sorts accepted-before-rejected and then by
+    // descending score, so the winner is simply the head of the list when it is not
+    // rejected — scoring twice to ask the same question would only risk the two answers
+    // disagreeing after a future tuning pass.
+    const ranked = rankCandidates(
       target,
       candidates.map((c) => ({
         id: c.id,
@@ -132,19 +154,21 @@ export async function acquireTrack(
       { durationToleranceMs: 5000, minBitrateKbps: 0, acceptFloor: 0.5, artistPlausibilityFloor: 0.3, ...scoringOpts },
     )
 
-    const winner = pickBestCandidate(
-      target,
-      candidates.map((c) => ({
-        id: c.id,
-        title: c.title,
-        artist: c.artist,
-        album: c.album ?? null,
-        durationMs: c.durationMs ?? null,
-        format: c.format ?? null,
-        bitrate: c.bitrate ?? null,
-      })),
-      { durationToleranceMs: 5000, minBitrateKbps: 0, acceptFloor: 0.5, artistPlausibilityFloor: 0.3, ...scoringOpts },
-    )
+    const scored: ScoredEntry[] = ranked.map((s) => {
+      const c = byId.get(s.id)
+      return {
+        ...s,
+        title: c?.title ?? '',
+        artist: c?.artist ?? '',
+        album: c?.album,
+        durationMs: c?.durationMs,
+        format: c?.format,
+        bitrate: c?.bitrate,
+      }
+    })
+
+    const head = ranked[0]
+    const winner = head && !head.rejected ? head : null
 
     if (!winner) {
       // Results existed but none were good enough. This is a DIFFERENT outcome from
@@ -160,7 +184,7 @@ export async function acquireTrack(
       continue
     }
 
-    const chosen = candidates.find((c) => c.id === winner.id)!
+    const chosen = byId.get(winner.id)!
     try {
       const file = await provider.download(chosen, opts.destinationDir, (p) =>
         opts.onProgress?.({ ...p, provider: provider.name }),

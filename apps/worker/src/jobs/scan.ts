@@ -12,16 +12,20 @@
  * and the phase-3 coverage report understates the library badly.
  */
 
-import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { readdir, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { normalizeTrack, qualityScore } from '@crate/core'
 import { prisma } from '@crate/db'
 import { parseFile } from 'music-metadata'
+import { computeFingerprint, ffprobeDuration, hashAudioStream } from '../lib/audio.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings } from '../lib/settings.js'
+
+// The audio tooling itself lives in ../lib/audio.ts — the postprocess chain needs the
+// same helpers, and two copies of "how do we hash an audio stream" is one too many.
+// Re-exported because the fingerprint job has always imported them from here.
+export { computeFingerprint, ffprobeDuration, hashAudioStream }
 
 const AUDIO_EXTENSIONS = new Set([
   '.flac', '.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.aiff', '.aif', '.wma', '.alac', '.ape', '.wv',
@@ -47,71 +51,6 @@ export async function* walkAudioFiles(root: string): AsyncGenerator<string> {
       if (entry.isDirectory()) stack.push(full)
       else if (AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase())) yield full
     }
-  }
-}
-
-function run(cmd: string, args: string[], timeoutMs = 60_000): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args)
-    let stdout = ''
-    let stderr = ''
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      reject(new Error(`${cmd} timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-
-    child.stdout.on('data', (d) => (stdout += d.toString()))
-    child.stderr.on('data', (d) => (stderr += d.toString()))
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      resolve({ code: code ?? -1, stdout, stderr })
-    })
-  })
-}
-
-/**
- * Hash the decoded AUDIO STREAM, not the container (§7.4). This is what makes retagging
- * invisible to the scanner and what lets dedupe pass 1 be certain rather than probable.
- */
-export async function hashAudioStream(path: string): Promise<string | null> {
-  try {
-    const { code, stdout } = await run('ffmpeg', ['-v', 'error', '-i', path, '-map', '0:a', '-f', 'md5', '-'], 120_000)
-    if (code !== 0) return null
-    const match = /MD5=([0-9a-f]+)/i.exec(stdout)
-    return match?.[1] ?? null
-  } catch {
-    return null
-  }
-}
-
-export async function ffprobeDuration(path: string): Promise<number | null> {
-  try {
-    const { code, stdout } = await run('ffprobe', [
-      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', path,
-    ])
-    if (code !== 0) return null
-    const seconds = Number(stdout.trim())
-    return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null
-  } catch {
-    return null
-  }
-}
-
-export async function computeFingerprint(
-  path: string,
-): Promise<{ fingerprint: string; durationSec: number } | null> {
-  try {
-    const { code, stdout } = await run('fpcalc', ['-json', path], 120_000)
-    if (code !== 0) return null
-    const parsed = JSON.parse(stdout) as { fingerprint?: string; duration?: number }
-    if (!parsed.fingerprint || parsed.duration === undefined) return null
-    return { fingerprint: parsed.fingerprint, durationSec: parsed.duration }
-  } catch {
-    return null
   }
 }
 
@@ -208,7 +147,18 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
  * normalized artist+title. Two files of the same recording therefore share one
  * LibraryTrack, which is what makes dedupe and playlist resolution work.
  */
-export async function registerFile(file: ScannedFile, contentHash: string | null): Promise<string> {
+export interface RegisterExtras {
+  /** Which adapter produced this file. Feeds the source-trust term in qualityScore. */
+  sourceProvider?: string | null
+  /** Already computed by the post-processor, so the fingerprint queue can skip it. */
+  fingerprint?: string | null
+}
+
+export async function registerFile(
+  file: ScannedFile,
+  contentHash: string | null,
+  extras: RegisterExtras = {},
+): Promise<string> {
   const norm = normalizeTrack({ title: file.title, artists: file.artist })
   const normTitle = norm.title.norm
   const normArtist = norm.artist.normAll
@@ -256,10 +206,13 @@ export async function registerFile(file: ScannedFile, contentHash: string | null
     bitDepth: file.bitDepth ?? null,
     tags: file.tags,
     hasEmbeddedArt: file.hasEmbeddedArt,
+    sourceProvider: extras.sourceProvider ?? null,
   })
 
   const data = {
     trackId: track.id,
+    ...(extras.sourceProvider ? { sourceProvider: extras.sourceProvider } : {}),
+    ...(extras.fingerprint ? { fingerprint: extras.fingerprint } : {}),
     format: file.format,
     bitrate: file.bitrate ?? null,
     sampleRate: file.sampleRate ?? null,

@@ -20,6 +20,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: '/', label: 'Overview' },
+  { href: '/setup', label: 'Setup' },
   { href: '/import', label: 'Import' },
   { href: '/playlists', label: 'Playlists', countKey: 'playlists' },
   { href: '/queue', label: 'Queue', countKey: 'queue' },

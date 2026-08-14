@@ -132,8 +132,99 @@ So: features are built complete, verified against fixtures, and meet real data w
 **Chose:** implemented the palette, type roles, and segmented meters exactly as §9 specifies.
 **Note:** §9 says to read `/mnt/skills/public/frontend-design/SKILL.md` and run its two-pass process. That path is not present in this environment, so I worked from §9's direction directly — which is detailed enough to build from, including the anti-pattern list. Worth a design review pass when the skill is available.
 
+### A20. Truncation detection cannot trust ffmpeg's exit code
+**Found by running it.** The obvious full-decode check — `ffmpeg -xerror … -f null -` and
+test the exit status — **does not work**. A FLAC cut in half at the byte level prints
+`invalid residual / decode_frame() failed` and still exits **0** on ffmpeg 6.1.1. A
+verification built on the exit code passes a truncated download straight into the library,
+which is the most damaging failure this app has.
+
+**Chose:** two signals instead. Any stderr output at `-v error` (a clean decode is silent
+at that level), plus the decoded duration read from `-progress` compared against the
+container header. The second catches formats that truncate without upsetting the decoder
+at all — the header keeps claiming the full length because it was written up front.
+**Verified:** good / silent / too-short / truncated / lossy fixtures all classify correctly.
+
+### A21. Ogg and Opus keep their tags on the STREAM, not the container
+**Found by running it.** `ffprobe` reports ID3 and MP4 metadata under `format.tags`, but
+Vorbis comments — what Ogg and Opus use — appear under the audio *stream*. Reading only
+`format.tags` reported a fully-tagged Opus file as completely untagged.
+
+This mattered specifically because **Opus is what the YouTube Music provider produces**, so
+the format most likely to be downloaded was the one whose tags were invisible. `probeAudio`
+now merges both, container-level winning.
+
+### A22. Post-processing collisions: the arrival loses, the library is never touched
+§7.6 step 6 says to apply the §7.7 keeper rule when a download collides with something
+already present. That rule is symmetric, but the two outcomes are not:
+
+- **The download loses** → it goes to the trash and the request resolves against the
+  existing file. Safe: it was never in the library, so there is nothing to disturb.
+- **The download wins** → a duplicate group is raised for review and **the existing file is
+  not moved**. Moving something already in the library is the §7.7 flow, which is dry-run
+  by default and reviewed by hand (A13). A post-processor quietly relocating library files
+  as a side effect of a download would be exactly the behaviour that loses trust.
+
+### A23. Transcode policy defaults to doing nothing
+**Chose:** `transcodeNormalizeLossy` off, per §7.6 step 2. The lossless guard above it is
+**not** configurable at all — a lossy re-encode of a lossless source is unrecoverable and no
+setting is worth that. When lossy normalization is on, the log says out loud that it is a
+second lossy generation.
+
+### A24. Only the YouTube Music provider is built
+**Chose:** ship the chain with one adapter. §12 says to ask before writing an adapter with
+genuinely involved setup, and slskd (Gluetun routing, credentials) and streamrip (Deezer
+ARL, account) both qualify. YouTube Music needs no credentials, which is why §10 phase 4
+puts it first: it is the one adapter that can be exercised end to end without asking the
+owner to set anything up, so it is what the post-processing chain was tested against.
+
+**To add either:** a new file in `packages/providers`, registered in `buildProviders`. The
+registry, scoring, fall-through, attempt logging and post-processing are all provider-
+agnostic already — no refactor.
+
+### A25. The LLM curator retries once
+**Found by running it** against the real Ollama on this box. The same prompt succeeds and
+fails run to run: long structured output occasionally arrives truncated mid-array. One
+retry turns an intermittent failure into a rare one and costs a few seconds.
+
+Related: `llmModel` now defaults to `gemma4:e4b-it-qat`, which is what is actually installed
+here (checked 2026-08-14). The health check matches on prefix, so the previous default of
+`gemma3` reported the curator as unavailable rather than merely unconfigured.
+
+**Verified:** asked for a calm instrumental playlist against a synthetic library; the model
+returned five plausible-sounding tracks, the resolver dropped all five, and **no playlist
+was written**. That is the guardrail working, not a failure.
+
+### A26. What a backup contains, and what it deliberately does not
+**Chose:** everything harvested from Spotify, every match decision, listening history, the
+artist graph, and the library index. **Excluded:** `JobRun` and `DownloadAttempt` — the two
+bulkiest tables, worth nothing a week later.
+
+**The encryption key is NOT in the backup**, on purpose. Credentials are exported as
+ciphertext and are only readable with the same `CRATE_ENCRYPTION_KEY`. A backup that
+carried its own key would be a single file that hands over every credential.
+
+Restore is upsert-in-dependency-order, not a transaction: a full library restore is
+hundreds of thousands of statements and one transaction that size hits statement timeouts
+and holds locks for minutes. Each table reports what it wrote, so a partial restore is
+legible and simply re-runnable. **Verified:** wipe, restore, compare row-for-row, restore
+again and confirm nothing changed.
+
+### A27. Two pre-existing issues fixed in passing
+- **`PlaylistSchema` exceeded TypeScript's serialization limit (TS7056)** and had been
+  failing `pnpm typecheck` in `packages/integrations`. Cause: `PagingSchema(PlaylistItemSchema)`
+  nested twice, each embedding the full TrackObject shape. Items are read from
+  `GET /playlists/{id}/items` as their own call and never from the playlist object, so the
+  nested paging is now a shallow schema. Behaviour is unchanged — the field is only ever
+  tested for presence (finding B) and `total`.
+- **`renderPlacement` produced `1-00 Title`** when a track number was unknown, which looks
+  like real metadata. An unknown track number now blanks the disc as well and the whole
+  prefix collapses, leaving just the title.
+
 ### A15. Postponed to a later pass
-Recorded so they aren't mistaken for finished work: provider adapters beyond the interface itself, the LLM curator, mix generation, release radar, the duplicates review UI, the first-run wizard, and the command palette. Status of each phase is in the build log at the bottom of this file.
+~~Recorded so they aren't mistaken for finished work: provider adapters beyond the interface itself, the LLM curator, mix generation, release radar, the duplicates review UI, the first-run wizard, and the command palette.~~
+
+**All of these are now built.** The provider adapters are the one partial: the interface, chain and scoring are done and YouTube Music is implemented, but slskd and streamrip are not — see A24 for why that is a question for the owner rather than an omission. What genuinely remains is under "Still outstanding" in the build log below.
 
 ---
 
@@ -145,9 +236,68 @@ Appended as phases complete. A phase is "done" only against its `PROMPT.md` §10
 |---|---|---|
 | 1 — Foundations | **done** | Verified end to end against real Postgres/Redis: pages render, a job runs, progress streams over SSE. |
 | 1.5 — Harvest | **ready to run — needs your Spotify app** | Orchestrator + rate limiter tested against a fake Spotify (34 tests). OAuth flow and connections editor are now built and verified. The only remaining step is yours: create a Spotify app and click Connect. See "What's left" below. |
-| 2 — Library | **core done** | Scanner, ffprobe, audio-stream hashing, fpcalc fingerprinting and the AcoustID/MusicBrainz ISRC backfill all verified against real audio files. Library UI renders. |
-| 3 — Spotify + import + matching | partial | Matching cascade and importers built and tested; paste-box resolver and review queue working. Playlist/queue screens still empty states. |
-| 4–8 | not started | |
+| 2 — Library | **done** | Scanner, ffprobe, audio-stream hashing, fpcalc fingerprinting and the AcoustID/MusicBrainz ISRC backfill all verified against real audio files. Library UI renders. |
+| 3 — Spotify + import + matching | **done** | Matching cascade and importers built and tested; paste-box resolver and review queue working. Playlist and queue screens now real. |
+| 4 — Acquisition | **done** | Provider chain, candidate scoring, full post-processing chain, queue UI with the provider chain and failure reasons visible. Only the YouTube Music adapter is implemented — A24. |
+| 5 — Playlists | **done** | Atomic m3u8 writes, sidecars, Subsonic push, gap filling, debounced rescan shared with the post-processor. |
+| 6 — Duplicates | **done** | Five grouping passes, keeper selection, dry-run default, trash with manifest, working undo, keyboard review UI. |
+| 7 — Recommendations | **done** | Affinity with recency decay, blended artist graph, Louvain into stable slots, weighted sampling with discovery, release radar, LLM curator with the library resolver. |
+| 8 — Polish | **done** | First-run wizard, `Cmd+K` palette, backup/restore, README. |
+
+### Verified against real infrastructure — phases 4, 6, 7, 8
+
+Run against real PostgreSQL 17, real Redis, real `ffmpeg`/`ffprobe`/`fpcalc`, real audio
+files, and the real Ollama on this box. Not typechecked-and-assumed.
+
+**Post-processing (§7.6)** — a staged Opus file went through the whole chain and landed at
+`Radiohead/OK Computer (1997)/1-06 Paranoid Android.opus`, with the harvested ISRC,
+`CRATE_SOURCE=ytm`, album artist and track number written into the file; audio-stream hash
+and fingerprint computed; `LibraryFile` registered with provenance; the match resolved as
+`MATCHED`/`ISRC`; the request marked `SUCCEEDED`.
+
+**Retagging does not change the audio hash.** Confirmed directly — tag write, then rehash,
+byte-identical. This is what makes dedupe pass 1 certain rather than probable.
+
+**A truncated download is rejected and never reaches the library.** See A20 for why the
+obvious version of this check silently did not work.
+
+**A second copy arriving** was correctly superseded by the existing file and moved to
+trash rather than deleted.
+
+**Dedupe** grouped an identical pair by audio hash, selected the properly-foldered file as
+keeper, **refused to apply while `dedupeDryRunOnly` was on**, applied once it was off,
+and **undo restored the file exactly**.
+
+**The trash purge refused a forged manifest** pointing at a live library file, and that file
+survived.
+
+**Mixes** — Louvain recovered all three seeded genre clusters, named them after their
+artists, kept every slot's meaning across a second run (continuity 1.0), never repeated a
+track across mixes, and never exceeded two tracks per artist. With the listening signal
+removed it **refused to generate anything** and said what would fix it, rather than
+producing six plausible-looking playlists out of noise.
+
+**The LLM curator's guardrail works** — see A25.
+
+**Backup/restore** round-tripped: export, wipe, restore, row-for-row comparison including
+foreign keys, then a second restore that changed nothing.
+
+**Every route returns 200** — all ten screens and the API endpoints, against a live database.
+
+**331 tests pass** across `core` (237), `integrations` (80) and `providers` (14).
+
+### Still outstanding
+
+- **The Spotify harvest has still never run against the real API.** Everything else is
+  verified; this one needs your app and your Premium, before 2026-09-01.
+- **slskd and streamrip adapters** — A24. Your call, and the question is in §12's list.
+- **The GDPR export parser is still untested against real data** — A9, unchanged. When the
+  export arrives, run it through and expect to fix field names.
+- **Mix quality is unfalsifiable until it runs on your real history.** The machinery is
+  verified; whether the six mixes are worth pressing play on is the open question, and
+  plan.md §1.4 set expectations for it deliberately.
+- **The design system has not had the two-pass review** the frontend-design skill asks for
+  (A14) — that path is still not present in this environment.
 
 ### Verified, not assumed
 

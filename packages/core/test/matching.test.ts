@@ -122,15 +122,13 @@ describe('matchTrack — ranking', () => {
   })
 
   it('is deterministic across repeated runs', () => {
-    const args = [
-      { id: 's', title: 'Song', artists: ['A'], durationMs: 200_000 },
-      [
-        { id: 'c1', title: 'Song', artist: 'A', durationMs: 200_500 },
-        { id: 'c2', title: 'Song', artist: 'A', durationMs: 200_400 },
-      ],
-    ] as const
-    const a = matchTrack(args[0], [...args[1]])
-    const b = matchTrack(args[0], [...args[1]])
+    const source = { id: 's', title: 'Song', artists: ['A'], durationMs: 200_000 }
+    const candidates = [
+      { id: 'c1', title: 'Song', artist: 'A', durationMs: 200_500 },
+      { id: 'c2', title: 'Song', artist: 'A', durationMs: 200_400 },
+    ]
+    const a = matchTrack(source, [...candidates])
+    const b = matchTrack(source, [...candidates])
     expect(a).toEqual(b)
   })
 })

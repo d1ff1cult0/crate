@@ -201,6 +201,44 @@ export class SubsonicClient {
     })
   }
 
+  /**
+   * Songs of one album, with the fields that make up the post-Spotify taste signal.
+   *
+   * `path` is included because it is the only reliable way to tie a Navidrome song back
+   * to a `LibraryFile` row: ids are Navidrome's own, titles collide constantly, and the
+   * path is the one thing both sides genuinely share — after §5's mapping is reversed.
+   */
+  async getAlbum(id: string): Promise<
+    Array<{
+      id: string
+      title: string
+      artist?: string
+      path?: string
+      playCount?: number
+      starred?: Date
+      lastPlayed?: Date
+    }>
+  > {
+    const body = await this.call('getAlbum', { id })
+    const album = body.album as { song?: unknown } | undefined
+    const songs = Array.isArray(album?.song) ? album.song : []
+
+    return songs.map((s) => {
+      const song = s as Record<string, unknown>
+      const starred = typeof song.starred === 'string' ? new Date(song.starred) : undefined
+      const played = typeof song.played === 'string' ? new Date(song.played) : undefined
+      return {
+        id: String(song.id),
+        title: String(song.title ?? ''),
+        ...(typeof song.artist === 'string' ? { artist: song.artist } : {}),
+        ...(typeof song.path === 'string' ? { path: song.path } : {}),
+        ...(typeof song.playCount === 'number' ? { playCount: song.playCount } : {}),
+        ...(starred && !Number.isNaN(starred.getTime()) ? { starred } : {}),
+        ...(played && !Number.isNaN(played.getTime()) ? { lastPlayed: played } : {}),
+      }
+    })
+  }
+
   /** Play counts, walked album by album — the post-Spotify listening signal. */
   async getAlbumList(
     type: 'frequent' | 'recent' | 'newest' = 'frequent',

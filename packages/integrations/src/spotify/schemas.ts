@@ -127,6 +127,24 @@ export const PagingSchema = <T extends z.ZodTypeAny>(item: T) =>
     .passthrough()
 
 /**
+ * The paging container as it appears INSIDE a playlist object.
+ *
+ * Deliberately shallow: items are read from `GET /playlists/{id}/items` as their own
+ * paginated call, never from the playlist object, so nothing here needs the full
+ * TrackObject shape. Nesting `PagingSchema(PlaylistItemSchema)` twice inside
+ * `PlaylistSchema` also produced a type large enough that TypeScript refused to
+ * serialize it (TS7056) — a real cost for a field only ever tested for presence and
+ * `total`.
+ */
+export const PlaylistTracksRefSchema = z
+  .object({
+    href: z.string().optional(),
+    total: z.number().optional(),
+    items: z.array(z.unknown()).optional(),
+  })
+  .passthrough()
+
+/**
  * The `items` field is ABSENT — not empty — for playlists the user neither owns nor
  * collaborates on. That absence is the detection signal (finding B), so it must be
  * optional here and checked explicitly by the resolver.
@@ -142,8 +160,8 @@ export const PlaylistSchema = z
     owner: PlaylistOwnerSchema.optional(),
     images: z.array(ImageSchema).nullable().optional(),
     uri: z.string().optional(),
-    items: PagingSchema(PlaylistItemSchema).optional(),
-    tracks: PagingSchema(PlaylistItemSchema).optional(), // deprecated alias
+    items: PlaylistTracksRefSchema.optional(),
+    tracks: PlaylistTracksRefSchema.optional(), // deprecated alias
   })
   .passthrough()
 

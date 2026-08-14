@@ -8,18 +8,27 @@
 
 import { prisma } from '@crate/db'
 import type { Job } from 'bullmq'
+import { applyDedupe, runDedupeScan } from './jobs/dedupe.js'
+import { enqueueMissing, retryAfterRejection, runDownload } from './jobs/download.js'
 import { runHarvest, runIsrcBackfill } from './jobs/harvest.js'
 import { runFingerprintFile, runFingerprintSweep } from './jobs/fingerprint.js'
 import { runMatchSweep } from './jobs/match.js'
 import {
   materializePlaylist,
   triggerScan,
+  writeAffectedPlaylists,
   writeAllPlaylists,
   writePlaylist,
 } from './jobs/playlist.js'
+import { runPostprocess } from './jobs/postprocess.js'
+import { runCurate, runGenerateMixes, runReleaseRadar, runTasteRefresh } from './jobs/recommend.js'
+import { runRestore } from './jobs/restore.js'
 import { runLibraryScan } from './jobs/scan.js'
 import { JobRunContext } from './lib/jobrun.js'
+import { runNavidromeScan } from './lib/navidrome.js'
 import { closeAll, createWorker, type QueueName } from './lib/queues.js'
+import { loadSettings } from './lib/settings.js'
+import { purgeTrash, undoTrashOperation } from './lib/trash.js'
 import { registerSchedules } from './schedules.js'
 
 const log = (msg: string, extra?: Record<string, unknown>) => {
@@ -91,9 +100,64 @@ async function main() {
     ),
 
     createWorker(
+      'download',
+      tracked('download', async (ctx, job) => {
+        if (job.name === 'enqueue-missing') {
+          return enqueueMissing(ctx, {
+            retryAbandoned: job.data?.retryAbandoned === true,
+          })
+        }
+        return runDownload(ctx, {
+          requestId: String(job.data.requestId),
+          ...(Array.isArray(job.data.exclude) ? { exclude: job.data.exclude as string[] } : {}),
+        })
+      }),
+    ),
+
+    createWorker(
+      'postprocess',
+      tracked('postprocess', async (ctx, job) => {
+        const result = await runPostprocess(ctx, {
+          requestId: String(job.data.requestId),
+          stagedPath: String(job.data.stagedPath),
+          provider: String(job.data.provider),
+        })
+        // §7.6 step 1: a file that fails verification falls through to the next
+        // provider. Across a queue boundary that means re-queueing the download with
+        // this provider excluded, rather than failing the job.
+        if (result.rejected) {
+          await retryAfterRejection(String(job.data.requestId), String(job.data.provider))
+        }
+        return result
+      }),
+    ),
+
+    createWorker(
+      'recommend',
+      tracked('recommend', async (ctx, job) => {
+        if (job.name === 'release-radar') return runReleaseRadar(ctx)
+        if (job.name === 'taste-refresh') return runTasteRefresh(ctx)
+        if (job.name === 'curate') {
+          return runCurate(ctx, String(job.data.request), Number(job.data.size ?? 30))
+        }
+        return runGenerateMixes(ctx, {
+          ...(typeof job.data?.slot === 'number' ? { onlySlot: job.data.slot as number } : {}),
+        })
+      }),
+    ),
+
+    createWorker(
       'playlist-write',
       tracked('playlist-write', async (ctx, job) => {
         if (job.name === 'write-all') return writeAllPlaylists(ctx)
+        if (job.name === 'write-affected') {
+          return writeAffectedPlaylists(ctx, String(job.data.sourceTrackId))
+        }
+        if (job.data?.playlistId) {
+          const result = await writePlaylist(ctx, String(job.data.playlistId))
+          await triggerScan(ctx)
+          return result
+        }
 
         const sourcePlaylistId = String(job.data?.sourcePlaylistId ?? '')
         if (!sourcePlaylistId) return
@@ -111,7 +175,42 @@ async function main() {
     createWorker(
       'maintenance',
       tracked('maintenance', async (ctx, job) => {
-        await ctx.log('info', `maintenance: ${job.name}`)
+        switch (job.name) {
+          case 'navidrome-scan':
+            return runNavidromeScan(ctx)
+          case 'dedupe-scan':
+            return runDedupeScan(ctx)
+          case 'dedupe-apply':
+            return applyDedupe(ctx, {
+              ...(Array.isArray(job.data?.groupIds)
+                ? { groupIds: job.data.groupIds as string[] }
+                : {}),
+              ...(typeof job.data?.minConfidence === 'number'
+                ? { minConfidence: job.data.minConfidence as number }
+                : {}),
+              dryRun: job.data?.dryRun !== false,
+            })
+          case 'dedupe-undo': {
+            const result = await undoTrashOperation(String(job.data.operationId))
+            await ctx.log('info', `Restored ${result.restored} file(s) from the trash`, {
+              failed: result.failed,
+            })
+            return result
+          }
+          case 'restore-backup':
+            return runRestore(ctx, String(job.data.path))
+          case 'trash-retention': {
+            const settings = await loadSettings()
+            return purgeTrash(ctx, {
+              enabled: settings.trashRetentionEnabled,
+              days: settings.trashRetentionDays,
+              trashRoot: process.env.TRASH_ROOT ?? settings.trashRoot,
+            })
+          }
+          default:
+            await ctx.log('warn', `Unknown maintenance job: ${job.name}`)
+            return
+        }
       }),
     ),
   ]

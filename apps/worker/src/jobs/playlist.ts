@@ -29,6 +29,7 @@ import { prisma } from '@crate/db'
 import { SubsonicClient } from '@crate/integrations'
 import { decryptJson } from '../lib/crypto.js'
 import type { JobRunContext } from '../lib/jobrun.js'
+import { requestNavidromeScan } from '../lib/navidrome.js'
 import { loadSettings } from '../lib/settings.js'
 
 /**
@@ -253,6 +254,50 @@ export async function materializePlaylist(
   return playlist.id
 }
 
+/**
+ * Rewrite only the playlists that were waiting on one source track.
+ *
+ * Called when a download lands. §7.9's sidecar exists so a gap can be filled "in place
+ * without me re-importing anything" — this is the other half of that: the track becomes
+ * playable, the playlists that referenced it are rewritten, and the sidecar shrinks by
+ * one entry. Rewriting the whole library's playlists for one track would be wasteful and
+ * would fight the scan debounce.
+ */
+export async function writeAffectedPlaylists(
+  ctx: JobRunContext,
+  sourceTrackId: string,
+): Promise<{ written: number }> {
+  const items = await prisma.playlistItem.findMany({
+    where: { sourceTrackId },
+    select: { playlistId: true },
+    distinct: ['playlistId'],
+  })
+
+  if (items.length === 0) {
+    await ctx.log('debug', 'No playlist referenced this track — nothing to rewrite')
+    return { written: 0 }
+  }
+
+  // The item may still be pointing at nothing: the match is written by the post-processor
+  // just before this runs, so refresh the link before writing.
+  const match = await prisma.match.findUnique({ where: { sourceTrackId } })
+  if (match?.libraryTrackId) {
+    await prisma.playlistItem.updateMany({
+      where: { sourceTrackId },
+      data: { libraryTrackId: match.libraryTrackId },
+    })
+  }
+
+  let written = 0
+  for (const { playlistId } of items) {
+    const result = await writePlaylist(ctx, playlistId)
+    if (result) written += 1
+  }
+
+  await triggerScan(ctx)
+  return { written }
+}
+
 /** Write every auto-sync playlist, then trigger ONE debounced Navidrome scan (§7.6.7). */
 export async function writeAllPlaylists(ctx: JobRunContext): Promise<{ written: number }> {
   const playlists = await prisma.playlist.findMany({
@@ -274,20 +319,13 @@ export async function writeAllPlaylists(ctx: JobRunContext): Promise<{ written: 
 /**
  * One Navidrome scan for a whole batch. §7.6 is explicit that a burst of writes must
  * not fire a scan per file — Navidrome rescans are expensive and it will fall behind.
+ *
+ * This asks for a debounced scan rather than starting one: writing twelve playlists
+ * after a download burst should produce a single scan once everything has settled. The
+ * mechanism lives in lib/navidrome.ts, shared with the post-processor so downloads and
+ * playlist writes collapse into the same window instead of each triggering their own.
  */
 export async function triggerScan(ctx: JobRunContext): Promise<void> {
-  const connection = await prisma.connection.findUnique({ where: { provider: 'navidrome' } })
-  if (!connection?.enabled || !connection.secretCipher) return
-
-  try {
-    const creds = decryptJson<{ baseUrl: string; username: string; password: string }>(
-      connection.secretCipher,
-    )
-    await new SubsonicClient(creds).startScan()
-    await ctx.log('info', 'Triggered a Navidrome scan')
-  } catch (err) {
-    await ctx.log('warn', 'Could not trigger a Navidrome scan', {
-      error: err instanceof Error ? err.message : String(err),
-    })
-  }
+  await requestNavidromeScan()
+  await ctx.log('debug', 'Requested a debounced Navidrome scan')
 }

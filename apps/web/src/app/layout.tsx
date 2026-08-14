@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Archivo, JetBrains_Mono, Public_Sans } from 'next/font/google'
 import { Rail } from '../components/rail'
 import { ActivityDrawer } from '../components/activity-drawer'
+import { CommandPalette } from '../components/command-palette'
 import './globals.css'
 
 // Three type roles, deliberately different from each other (§9).
@@ -29,6 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           drawer instead; this app does long work and toasts are the wrong shape for it."
         */}
         <ActivityDrawer />
+        <CommandPalette />
       </body>
     </html>
   )
