@@ -8,7 +8,7 @@
 
 import { prisma } from '@crate/db'
 import type { Job } from 'bullmq'
-import { applyDedupe, runDedupeScan } from './jobs/dedupe.js'
+import { applyDedupe, deleteHighConfidenceDuplicates, runDedupeScan } from './jobs/dedupe.js'
 import { enqueueMissing, retryAfterRejection, runDownload } from './jobs/download.js'
 import { BOOT_AUTO_RECONCILE_MAX, reconcileDownloadQueue } from './lib/download-queue.js'
 import { runHarvest, runIsrcBackfill } from './jobs/harvest.js'
@@ -23,6 +23,7 @@ import {
 } from './jobs/playlist.js'
 import { runPostprocess } from './jobs/postprocess.js'
 import { runCurate, runGenerateMixes, runReleaseRadar, runTasteRefresh } from './jobs/recommend.js'
+import { runRepairIsrc } from './jobs/repair-isrc.js'
 import { runRestore } from './jobs/restore.js'
 import { runLibraryScan } from './jobs/scan.js'
 import { JobRunContext } from './lib/jobrun.js'
@@ -194,6 +195,12 @@ async function main() {
                 : {}),
               dryRun: job.data?.dryRun !== false,
             })
+          case 'dedupe-delete-high-confidence':
+            return deleteHighConfidenceDuplicates(ctx, {
+              ...(typeof job.data?.minConfidence === 'number'
+                ? { minConfidence: job.data.minConfidence as number }
+                : {}),
+            })
           case 'dedupe-undo': {
             const result = await undoTrashOperation(String(job.data.operationId))
             await ctx.log('info', `Restored ${result.restored} file(s) from the trash`, {
@@ -201,6 +208,8 @@ async function main() {
             })
             return result
           }
+          case 'repair-isrc':
+            return runRepairIsrc(ctx, { dryRun: job.data?.dryRun === true })
           case 'restore-backup':
             return runRestore(ctx, String(job.data.path))
           case 'trash-retention': {

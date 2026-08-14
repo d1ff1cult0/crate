@@ -174,14 +174,29 @@ export interface DedupeApplyResult {
  */
 export async function applyDedupe(
   ctx: JobRunContext,
-  opts: { groupIds?: string[]; minConfidence?: number; dryRun?: boolean },
+  opts: {
+    groupIds?: string[]
+    minConfidence?: number
+    dryRun?: boolean
+    /**
+     * Set only by an action the owner explicitly confirmed in the UI, naming the file
+     * count and the space involved.
+     *
+     * `dedupeDryRunOnly` exists so nothing destructive happens by accident or on a
+     * schedule. It is not meant to stop someone who has read exactly what will happen and
+     * pressed the button — at that point it stops being a safety rail and becomes a
+     * setting the owner cannot find to turn off, which is how it actually behaved: it was
+     * on by default and exposed nowhere in the interface.
+     */
+    confirmedOverride?: boolean
+  },
 ): Promise<DedupeApplyResult> {
   const settings = await loadSettings()
   const musicRoot = process.env.MUSIC_ROOT ?? settings.musicRoot
   const trashRoot = process.env.TRASH_ROOT ?? settings.trashRoot
 
   const requestedDryRun = opts.dryRun !== false
-  const dryRun = requestedDryRun || settings.dedupeDryRunOnly
+  const dryRun = requestedDryRun || (settings.dedupeDryRunOnly && !opts.confirmedOverride)
 
   const groups = await prisma.duplicateGroup.findMany({
     where: {
@@ -302,3 +317,87 @@ export async function setKeeper(groupId: string, fileId: string): Promise<void> 
 
 /** Re-export so the pure planner is reachable from one place in the worker. */
 export { planTrashMoves }
+
+/**
+ * The threshold above which a duplicate group is safe to resolve in bulk.
+ *
+ * 0.95 sits above the FUZZY tiers (0.85 and 0.70) and below HASH (1.0), FINGERPRINT
+ * (0.99), ISRC (0.97) and MBID (0.96) — so a bulk delete only ever touches groups
+ * established by identical audio, identical fingerprint, or a shared identifier with a
+ * near-identical duration. Nothing decided by name similarity is included, and VARIANT
+ * groups are excluded by `applyDedupe` regardless of what threshold is passed.
+ */
+export const BULK_DELETE_MIN_CONFIDENCE = 0.95
+
+export interface DeletePreview {
+  minConfidence: number
+  groups: number
+  files: number
+  bytes: string
+  /** Groups above the threshold that are variants, and therefore excluded. */
+  variantGroupsExcluded: number
+}
+
+/**
+ * What a bulk delete would remove, as an aggregate rather than a row-by-row plan.
+ *
+ * The confirmation needs a count and a size, not a list of three thousand paths, and this
+ * has to be fast enough to render inside a dialog.
+ */
+export async function previewHighConfidenceDeletion(
+  minConfidence = BULK_DELETE_MIN_CONFIDENCE,
+): Promise<DeletePreview> {
+  const groups = await prisma.duplicateGroup.findMany({
+    where: { status: 'OPEN', confidence: { gte: minConfidence } },
+    select: {
+      id: true,
+      reason: true,
+      members: { where: { isKeeper: false }, select: { file: { select: { sizeBytes: true } } } },
+    },
+  })
+
+  const resolvable = groups.filter((g) => g.reason !== 'VARIANT')
+  let files = 0
+  let bytes = 0n
+  for (const group of resolvable) {
+    for (const member of group.members) {
+      files += 1
+      bytes += member.file.sizeBytes
+    }
+  }
+
+  return {
+    minConfidence,
+    groups: resolvable.length,
+    files,
+    bytes: String(bytes),
+    variantGroupsExcluded: groups.length - resolvable.length,
+  }
+}
+
+/**
+ * Delete every duplicate above the threshold, in one confirmed action.
+ *
+ * "Delete" means moved to `TRASH_ROOT` with a manifest, not unlinked. That is not a
+ * softened version of the request — it is what makes the action safe to press: the move
+ * is a rename, so it is as fast as a delete, it is fully undoable from the Duplicates
+ * screen, and the retention job clears the trash later. Unlinking outright would buy
+ * nothing and forfeit the audit trail the owner asked to keep.
+ */
+export async function deleteHighConfidenceDuplicates(
+  ctx: JobRunContext,
+  opts: { minConfidence?: number } = {},
+): Promise<DedupeApplyResult> {
+  const minConfidence = opts.minConfidence ?? BULK_DELETE_MIN_CONFIDENCE
+  const preview = await previewHighConfidenceDeletion(minConfidence)
+
+  await ctx.log('info', `Deleting duplicates at confidence ≥ ${minConfidence}`, {
+    groups: preview.groups,
+    files: preview.files,
+    bytes: preview.bytes,
+    variantGroupsExcluded: preview.variantGroupsExcluded,
+    note: 'Files move to TRASH_ROOT with a manifest and can be restored from the Duplicates screen.',
+  })
+
+  return applyDedupe(ctx, { minConfidence, dryRun: false, confirmedOverride: true })
+}

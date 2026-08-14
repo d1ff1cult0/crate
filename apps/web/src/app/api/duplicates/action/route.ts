@@ -16,6 +16,7 @@
 
 import { prisma } from '@crate/db'
 import { z } from 'zod'
+import { BULK_DELETE_MIN_CONFIDENCE } from '../../../../lib/jobs'
 import { enqueueJob, jobId } from '../../../../lib/queue'
 
 export const dynamic = 'force-dynamic'
@@ -23,6 +24,20 @@ export const runtime = 'nodejs'
 
 const BodySchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('plan'), groupIds: z.array(z.string()).optional() }),
+  /** What a bulk delete would remove — count and size, for the confirmation. */
+  z.object({
+    action: z.literal('preview-bulk-delete'),
+    minConfidence: z.number().min(0).max(1).optional(),
+  }),
+  /**
+   * The confirmed bulk delete. `confirm` is required and must be the literal word, so
+   * this cannot be triggered by a stray request or a mis-click.
+   */
+  z.object({
+    action: z.literal('bulk-delete'),
+    minConfidence: z.number().min(0).max(1).optional(),
+    confirm: z.literal('DELETE'),
+  }),
   z.object({
     action: z.literal('apply'),
     groupIds: z.array(z.string()).min(1).optional(),
@@ -81,6 +96,48 @@ export async function POST(request: Request) {
       ),
       plan,
     })
+  }
+
+  if (body.action === 'preview-bulk-delete') {
+    const minConfidence = body.minConfidence ?? BULK_DELETE_MIN_CONFIDENCE
+
+    // Aggregate, not a row-by-row plan: the confirmation needs a count and a size, and
+    // it has to render inside a dialog rather than after a scroll through 3,000 paths.
+    const groups = await prisma.duplicateGroup.findMany({
+      where: { status: 'OPEN', confidence: { gte: minConfidence } },
+      select: {
+        reason: true,
+        members: { where: { isKeeper: false }, select: { file: { select: { sizeBytes: true } } } },
+      },
+    })
+
+    const resolvable = groups.filter((g) => g.reason !== 'VARIANT')
+    let files = 0
+    let bytes = 0n
+    for (const group of resolvable) {
+      for (const member of group.members) {
+        files += 1
+        bytes += member.file.sizeBytes
+      }
+    }
+
+    return Response.json({
+      minConfidence,
+      groups: resolvable.length,
+      files,
+      bytes: String(bytes),
+      variantGroupsExcluded: groups.length - resolvable.length,
+    })
+  }
+
+  if (body.action === 'bulk-delete') {
+    await enqueueJob(
+      'maintenance',
+      'dedupe-delete-high-confidence',
+      { minConfidence: body.minConfidence ?? BULK_DELETE_MIN_CONFIDENCE },
+      { jobId: jobId('dedupe-bulk-delete', Date.now()) },
+    )
+    return Response.json({ ok: true, queued: true })
   }
 
   if (body.action === 'ignore') {

@@ -3,19 +3,35 @@
  *
  * "J/K to move, Enter to accept, X to reject, D to queue download. I should be able to
  * clear 200 ambiguous matches in a few minutes."
+ *
+ * Paginated server-side at 50. The count and the page are separate queries so the total
+ * is the real total rather than the size of whatever slice was fetched.
  */
 
+import { paginate, parsePageRequest } from '@crate/core'
 import { prisma } from '@crate/db'
+import { Pager } from '../../components/pagination'
 import { ReviewQueue } from '../../components/review-queue'
 import { EmptyState, Panel } from '../../components/ui'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ReviewPage() {
+export default async function ReviewPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; pageSize?: string }>
+}) {
+  const params = await searchParams
+  const request = parsePageRequest(params)
+
+  const total = await prisma.match.count({ where: { status: 'NEEDS_REVIEW' } })
+  const pagination = paginate(request, total)
+
   const matches = await prisma.match.findMany({
     where: { status: 'NEEDS_REVIEW' },
-    orderBy: { confidence: 'desc' },
-    take: 200,
+    orderBy: [{ confidence: 'desc' }, { id: 'asc' }],
+    skip: pagination.skip,
+    take: pagination.take,
     include: {
       sourceTrack: {
         select: { id: true, title: true, artists: true, album: true, durationMs: true, isrc: true },
@@ -60,16 +76,20 @@ export default async function ReviewPage() {
         </p>
       </header>
 
-      {items.length === 0 ? (
+      {total === 0 ? (
         <Panel>
           <EmptyState title="Nothing to review">
-            Ambiguous matches land here — usually a live version against a studio one, or
-            two artists with the same track title. There are none right now, which either
-            means everything matched cleanly or nothing has been imported yet.
+            Every match is either confident enough to accept or too weak to consider. This
+            fills up after a harvest or a library scan changes what is matchable.
           </EmptyState>
         </Panel>
       ) : (
-        <ReviewQueue items={items} />
+        <>
+          <ReviewQueue items={items} totalRemaining={total} />
+          <Panel>
+            <Pager pagination={pagination} basePath="/review" noun="match" />
+          </Panel>
+        </>
       )}
     </div>
   )

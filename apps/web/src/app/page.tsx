@@ -7,8 +7,10 @@
  * is no data the screen says what to do about it (§11: don't mock anything into the UI).
  */
 
+import { computeCoverage, computeLibraryTotals, explainQueueable } from '@crate/core'
 import { prisma } from '@crate/db'
 import Link from 'next/link'
+import { JobButton } from '../components/job-button'
 import { MeterRow } from '../components/meter'
 import { Badge, Button, EmptyState, Panel, Readout, StatusDot } from '../components/ui'
 
@@ -20,9 +22,9 @@ const PREMIUM_LAPSE = new Date('2026-09-01T00:00:00Z')
 async function getOverview() {
   const [
     sourceTracks,
-    matched,
-    review,
-    missing,
+    matchCounts,
+    requestCounts,
+    missingWithoutRequest,
     libraryTracks,
     libraryFiles,
     playlists,
@@ -32,11 +34,19 @@ async function getOverview() {
     recentJobs,
     connections,
     harvestSummary,
+    matchRows,
   ] = await Promise.all([
     prisma.sourceTrack.count(),
-    prisma.match.count({ where: { status: 'MATCHED' } }),
-    prisma.match.count({ where: { status: 'NEEDS_REVIEW' } }),
-    prisma.match.count({ where: { status: 'MISSING' } }),
+    prisma.match.groupBy({ by: ['status'], _count: true }),
+    prisma.downloadRequest.groupBy({ by: ['status'], _count: true }),
+    // The number "download all missing" would actually create: MISSING matches with no
+    // request of any kind behind them.
+    prisma.match.count({
+      where: {
+        status: 'MISSING',
+        sourceTrack: { downloads: { none: {} } },
+      },
+    }),
     prisma.libraryTrack.count(),
     prisma.libraryFile.count({ where: { missingSince: null } }),
     prisma.sourcePlaylist.count(),
@@ -46,18 +56,47 @@ async function getOverview() {
     prisma.jobRun.findMany({ orderBy: { startedAt: 'desc' }, take: 8 }),
     prisma.connection.findMany(),
     prisma.setting.findUnique({ where: { key: 'spotify:harvest:summary' } }),
+    prisma.match.count(),
   ])
 
+  const m = Object.fromEntries(matchCounts.map((c) => [c.status, c._count])) as Record<string, number>
+  const r = Object.fromEntries(requestCounts.map((c) => [c.status, c._count])) as Record<string, number>
+
+  const coverage = computeCoverage({
+    sourceTracks,
+    matches: {
+      matched: m.MATCHED ?? 0,
+      missing: m.MISSING ?? 0,
+      needsReview: m.NEEDS_REVIEW ?? 0,
+      downloading: m.DOWNLOADING ?? 0,
+      rejected: m.REJECTED ?? 0,
+      // Source tracks that have never been evaluated have no Match row at all. The old
+      // Overview lost them entirely, so the parts never summed to the whole.
+      unevaluated: Math.max(0, sourceTracks - matchRows),
+    },
+    requests: {
+      queued: r.QUEUED ?? 0,
+      running: r.RUNNING ?? 0,
+      succeeded: r.SUCCEEDED ?? 0,
+      failed: r.FAILED ?? 0,
+      abandoned: r.ABANDONED ?? 0,
+      manualHold: r.MANUAL_HOLD ?? 0,
+    },
+    missingWithoutRequest,
+  })
+
   return {
-    sourceTracks, matched, review, missing, libraryTracks, libraryFiles,
+    coverage,
+    library: computeLibraryTotals(libraryFiles, libraryTracks),
     playlists, notOwned, withIsrc, awaitingIsrc, recentJobs, connections,
+    sourceTracks,
     harvested: harvestSummary !== null,
   }
 }
 
 export default async function OverviewPage() {
   const d = await getOverview()
-  const coverage = d.sourceTracks === 0 ? 0 : d.matched / d.sourceTracks
+  const c = d.coverage
   const isrcCoverage = d.sourceTracks === 0 ? 0 : d.withIsrc / d.sourceTracks
   const daysLeft = Math.ceil((PREMIUM_LAPSE.getTime() - Date.now()) / 86_400_000)
 
@@ -72,7 +111,7 @@ export default async function OverviewPage() {
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
             {d.sourceTracks > 0
-              ? `${d.matched.toLocaleString()} of ${d.sourceTracks.toLocaleString()} wanted tracks are in the library.`
+              ? `${c.matched.toLocaleString()} of ${c.wanted.toLocaleString()} wanted tracks are in the library.`
               : 'Nothing imported yet.'}
           </p>
         </div>
@@ -106,23 +145,33 @@ export default async function OverviewPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Panel>
-          <Readout label="Library tracks" value={d.libraryTracks.toLocaleString()} />
+          {/*
+            Files, not recordings, is the number that should agree with Navidrome —
+            Navidrome counts songs, i.e. files. Showing the recording count beside a
+            Navidrome song count made a correct library look like it had lost 5,000
+            tracks, which is what prompted this.
+          */}
+          <Readout label="Audio files" value={d.library.files.toLocaleString()} />
+          <p className="mt-1 text-xs text-ink-muted">on disk · matches Navidrome&rsquo;s song count</p>
         </Panel>
         <Panel>
-          <Readout label="Files" value={d.libraryFiles.toLocaleString()} />
+          <Readout label="Distinct recordings" value={d.library.tracks.toLocaleString()} />
+          <p className="mt-1 text-xs text-ink-muted">
+            {d.library.duplicateFiles.toLocaleString()} extra copies grouped
+          </p>
         </Panel>
         <Panel>
           <Readout
             label="Needs review"
-            value={d.review.toLocaleString()}
-            tone={d.review > 0 ? 'warn' : undefined}
+            value={c.needsReview.toLocaleString()}
+            tone={c.needsReview > 0 ? 'warn' : undefined}
           />
         </Panel>
         <Panel>
           <Readout
             label="Missing"
-            value={d.missing.toLocaleString()}
-            tone={d.missing > 0 ? 'error' : undefined}
+            value={c.missing.toLocaleString()}
+            tone={c.missing > 0 ? 'error' : undefined}
           />
         </Panel>
       </div>
@@ -144,16 +193,118 @@ export default async function OverviewPage() {
         ) : (
           <div className="space-y-5">
             <MeterRow
-              label="Library coverage"
-              value={coverage}
-              tone={coverage > 0.8 ? 'ok' : coverage > 0.4 ? 'warn' : 'error'}
-              detail={`${Math.round(coverage * 100)}% · ${d.matched.toLocaleString()} of ${d.sourceTracks.toLocaleString()}`}
+              label="In the library"
+              value={c.ratio}
+              tone={c.ratio > 0.8 ? 'ok' : c.ratio > 0.4 ? 'warn' : 'error'}
+              detail={`${Math.round(c.ratio * 100)}% · ${c.matched.toLocaleString()} of ${c.wanted.toLocaleString()} wanted`}
             />
+
+            {/*
+              Every wanted track in exactly one state, adding up to the total. The old
+              panel showed a coverage figure and a missing figure that could not be
+              reconciled with each other, because tracks never evaluated had no Match row
+              and appeared in neither.
+            */}
+            <div>
+              <div className="label mb-2">Where the {c.wanted.toLocaleString()} wanted tracks stand</div>
+              <ul className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+                {(
+                  [
+                    ['Matched in the library', c.matched, 'ok'],
+                    ['Missing — not owned yet', c.missing, 'error'],
+                    ['Downloading now', c.downloading, 'warn'],
+                    ['Waiting on your review', c.needsReview, 'warn'],
+                    ['Rejected by you', c.rejected, 'muted'],
+                    ['Not yet evaluated', c.unevaluated, 'muted'],
+                  ] as const
+                )
+                  .filter(([, value]) => value > 0)
+                  .map(([label, value, tone]) => (
+                    <li key={label} className="flex items-baseline justify-between gap-3 text-sm">
+                      <span className="text-ink-muted">{label}</span>
+                      <span
+                        className={`data ${tone === 'ok' ? 'text-ok' : tone === 'error' ? 'text-error' : tone === 'warn' ? 'text-warn' : 'text-ink-muted'}`}
+                      >
+                        {value.toLocaleString()}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+              {!c.reconciles && (
+                <p className="mt-2 text-xs text-warn">
+                  These do not add up to {c.wanted.toLocaleString()} — a match sweep is
+                  probably mid-flight. Re-run one from the palette if it persists.
+                </p>
+              )}
+            </div>
+
+            {/* Acquisition, which is a different question from coverage. */}
+            {c.requestsTotal > 0 && (
+              <div>
+                <div className="label mb-2">Download requests</div>
+                <ul className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+                  {(
+                    [
+                      ['Downloaded successfully', c.requests.succeeded, 'ok'],
+                      ['Queued', c.requests.queued, 'muted'],
+                      ['Running right now', c.requests.running, 'warn'],
+                      ['Failed — temporary, retryable', c.requests.failed, 'warn'],
+                      ['No provider had it', c.requests.abandoned, 'error'],
+                      ['On hold', c.requests.manualHold, 'muted'],
+                    ] as const
+                  )
+                    .filter(([, value]) => value > 0)
+                    .map(([label, value, tone]) => (
+                      <li key={label} className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="text-ink-muted">{label}</span>
+                        <span
+                          className={`data ${tone === 'ok' ? 'text-ok' : tone === 'error' ? 'text-error' : tone === 'warn' ? 'text-warn' : 'text-ink-muted'}`}
+                        >
+                          {value.toLocaleString()}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+
+            {/*
+              The question this panel exists to answer: why does "download all missing"
+              queue far fewer than the missing count?
+            */}
+            {c.missing > 0 && (
+              <div className="recess rounded-[4px] border border-hairline p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="label">Download everything missing</div>
+                    <p className="mt-1 max-w-prose text-xs leading-relaxed text-ink-muted">
+                      {explainQueueable(c)}
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <JobButton
+                      job="download-missing"
+                      label={`Queue ${c.queueable.toLocaleString()} downloads`}
+                      variant="primary"
+                    />
+                  </div>
+                </div>
+                {c.blocked.total > 0 && (
+                  <p className="mt-2 text-xs text-ink-muted">
+                    <Link href="/queue" className="underline">
+                      Open the queue
+                    </Link>{' '}
+                    to see them, or retry the failed and abandoned ones from there.
+                  </p>
+                )}
+              </div>
+            )}
+
             <MeterRow
               label="ISRC coverage"
               value={isrcCoverage}
               tone={isrcCoverage > 0.8 ? 'ok' : 'warn'}
-              detail={`${d.withIsrc.toLocaleString()} tracks${d.awaitingIsrc > 0 ? ` · ${d.awaitingIsrc.toLocaleString()} awaiting backfill` : ''}`}
+              detail={`${d.withIsrc.toLocaleString()} of ${c.wanted.toLocaleString()} wanted tracks${d.awaitingIsrc > 0 ? ` · ${d.awaitingIsrc.toLocaleString()} awaiting backfill` : ''}`}
             />
             {d.awaitingIsrc > 0 && (
               <p className="max-w-prose text-xs leading-relaxed text-ink-muted">

@@ -55,6 +55,18 @@ export const RUNNABLE: Record<string, RunnableJob> = {
     name: 'dedupe-scan',
     description: 'Grouping duplicates. Nothing is moved — this only builds the groups',
   },
+  'repair-isrc': {
+    queue: 'maintenance',
+    name: 'repair-isrc',
+    description:
+      'Splitting library tracks that a junk ISRC tag merged together, then re-deriving each file\'s identity from its own tags',
+  },
+  'repair-isrc-dry-run': {
+    queue: 'maintenance',
+    name: 'repair-isrc',
+    data: { dryRun: true },
+    description: 'Reporting which tracks a junk ISRC merged, without changing anything',
+  },
   'trash-retention': {
     queue: 'maintenance',
     name: 'trash-retention',
@@ -103,6 +115,17 @@ export const RUNNABLE: Record<string, RunnableJob> = {
     description: 'Rewriting every auto-sync playlist, then one Navidrome scan',
   },
 }
+
+/**
+ * Confidence at or above which a duplicate group may be resolved in bulk.
+ *
+ * Mirrors the worker's constant. 0.95 sits above the FUZZY tiers (0.85, 0.70) and below
+ * HASH (1.0), FINGERPRINT (0.99), ISRC (0.97) and MBID (0.96), so a bulk delete only ever
+ * touches groups established by identical audio, identical fingerprint, or a shared
+ * identifier with a near-identical duration. Nothing decided by name similarity is
+ * included, and variants are excluded regardless.
+ */
+export const BULK_DELETE_MIN_CONFIDENCE = 0.95
 
 /** Backup file format version. Bumped when the shape changes incompatibly. */
 export const BACKUP_FORMAT = 1

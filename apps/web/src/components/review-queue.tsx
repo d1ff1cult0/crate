@@ -27,7 +27,53 @@ function duration(ms: number | null): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-export function ReviewQueue({ items: initial }: { items: ReviewItem[] }) {
+
+/**
+ * One field, wanted above have, aligned on a shared left edge.
+ *
+ * The two values are the whole decision, so they get identical type and identical
+ * indentation and nothing sits between them. A field whose two sides are identical is
+ * dimmed: it carries no information for the comparison, and dimming it leaves the
+ * differing fields as the only thing with contrast on the row.
+ */
+function CompareRow({
+  label,
+  wanted,
+  have,
+  mono = false,
+}: {
+  label: string
+  wanted: string
+  have: string
+  mono?: boolean
+}) {
+  const same = wanted.trim().toLowerCase() === have.trim().toLowerCase()
+  const value = `min-w-0 truncate ${mono ? 'data' : ''} text-sm`
+
+  return (
+    <div className="grid grid-cols-[4.5rem_1fr] gap-x-3">
+      <span className={`label self-start pt-0.5 ${same ? 'opacity-40' : ''}`}>{label}</span>
+      <div className="min-w-0 space-y-0.5">
+        <div className={`${value} ${same ? 'text-ink-muted' : 'text-ink'}`} title={wanted}>
+          <span className="mr-1.5 text-[10px] uppercase tracking-wide text-ink-muted">want</span>
+          {wanted}
+        </div>
+        <div className={`${value} ${same ? 'text-ink-muted' : 'text-ink'}`} title={have}>
+          <span className="mr-1.5 text-[10px] uppercase tracking-wide text-ink-muted">have</span>
+          {have}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function ReviewQueue({
+  items: initial,
+  totalRemaining,
+}: {
+  items: ReviewItem[]
+  totalRemaining: number
+}) {
   const [items, setItems] = useState(initial)
   const [cursor, setCursor] = useState(0)
   const [pending, setPending] = useState<Set<string>>(new Set())
@@ -113,7 +159,8 @@ export function ReviewQueue({ items: initial }: { items: ReviewItem[] }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="data text-sm text-ink-muted">
-          {items.length} remaining · reviewing {cursor + 1}
+          {totalRemaining.toLocaleString()} to review · {items.length} on this page ·
+          reviewing {Math.min(cursor + 1, items.length)}
         </span>
         <div className="flex flex-wrap gap-2 text-xs text-ink-muted">
           {[
@@ -148,37 +195,49 @@ export function ReviewQueue({ items: initial }: { items: ReviewItem[] }) {
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1 space-y-2">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="min-w-0">
-                      <div className="label">Wanted</div>
-                      <div className="truncate text-sm text-ink">{item.source.title}</div>
-                      <div className="truncate text-xs text-ink-muted">
+                  {/*
+                    Stacked and aligned rather than side by side. The decision being made
+                    is "are these the same recording?", which is a character-by-character
+                    comparison of two titles and two artists — and the eye does that far
+                    faster when the strings start at the same x position, one directly
+                    above the other, than when they are in separate columns.
+                  */}
+                  {item.candidate ? (
+                    <div className="space-y-1.5">
+                      <CompareRow
+                        label="Title"
+                        wanted={item.source.title}
+                        have={item.candidate.title}
+                      />
+                      <CompareRow
+                        label="Artist"
+                        wanted={item.source.artists.join(', ')}
+                        have={item.candidate.artist}
+                      />
+                      <CompareRow
+                        label="Album"
+                        wanted={item.source.album ?? '—'}
+                        have={item.candidate.album ?? '—'}
+                      />
+                      <CompareRow
+                        label="Length"
+                        wanted={duration(item.source.durationMs)}
+                        have={duration(item.candidate.durationMs)}
+                        mono
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <div className="text-sm text-ink">{item.source.title}</div>
+                      <div className="text-xs text-ink-muted">
                         {item.source.artists.join(', ')}
                         {item.source.album ? ` · ${item.source.album}` : ''}
                       </div>
-                      <div className="data text-xs text-ink-muted">
-                        {duration(item.source.durationMs)}
+                      <div className="text-sm text-warn">
+                        No candidate in the library — accepting this would match it to nothing.
                       </div>
                     </div>
-
-                    <div className="min-w-0">
-                      <div className="label">In library</div>
-                      {item.candidate ? (
-                        <>
-                          <div className="truncate text-sm text-ink">{item.candidate.title}</div>
-                          <div className="truncate text-xs text-ink-muted">
-                            {item.candidate.artist}
-                            {item.candidate.album ? ` · ${item.candidate.album}` : ''}
-                          </div>
-                          <div className="data text-xs text-ink-muted">
-                            {duration(item.candidate.durationMs)}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="text-sm text-ink-muted">No candidate</div>
-                      )}
-                    </div>
-                  </div>
+                  )}
 
                   {item.notes.length > 0 && (
                     <ul className="space-y-0.5">

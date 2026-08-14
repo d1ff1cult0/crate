@@ -15,6 +15,7 @@
 import { readdir, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import {
+  cleanIsrc,
   normalizeTrack,
   qualityScore,
   sanitizeDeep,
@@ -118,6 +119,12 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     ? String(Array.isArray(common.musicbrainz_recordingid) ? common.musicbrainz_recordingid[0] : common.musicbrainz_recordingid)
     : undefined
 
+  // An ISRC is only usable if it IS one. `registerFile` resolves track identity by ISRC
+  // first, so a junk value merges unrelated songs into a single LibraryTrack — a scene
+  // tagger's `ISRC=PMEDIA` collapsed 2,585 different songs into one. Anything that is not
+  // structurally an ISRC is dropped rather than trusted, here and in tagsJson.
+  const validIsrc = cleanIsrc(isrc)
+
   const rawTags: Record<string, unknown> = {
     title: common.title,
     artist: common.artist,
@@ -127,7 +134,7 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     track: common.track?.no,
     disc: common.disk?.no,
     genre: common.genre?.[0],
-    isrc,
+    isrc: validIsrc ?? undefined,
     musicbrainz_trackid: mbid,
   }
 
@@ -155,11 +162,12 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
   const cleanedTags = sanitizeDeep(rawTags)
   if (cleanedTags.changedKeys.length > 0) sanitized.push(...cleanedTags.changedKeys.map((k) => `tags.${k}`))
 
+  if (isrc && !validIsrc) sanitized.push(`isrc (not an ISRC: "${isrc.slice(0, 24)}")`)
+
   const title = clean(common.title, 'title')
   const artist = clean(common.artist, 'artist')
   const albumArtist = clean(common.albumartist, 'albumartist')
   const album = clean(common.album, 'album')
-  const cleanIsrc = clean(isrc, 'isrc')
   const cleanMbid = clean(mbid, 'musicbrainz_trackid')
 
   // A file with no title tag still belongs in the library — use the filename. Sanitized
@@ -183,7 +191,7 @@ export async function readFileMetadata(path: string): Promise<ScannedFile | null
     artist: artist ?? albumArtist ?? '',
     ...(albumArtist ? { albumArtist } : {}),
     ...(album ? { album } : {}),
-    ...(cleanIsrc ? { isrc: cleanIsrc } : {}),
+    ...(validIsrc ? { isrc: validIsrc } : {}),
     ...(cleanMbid ? { mbid: cleanMbid } : {}),
     ...(common.year ? { year: common.year } : {}),
     ...(sanitized.length > 0 ? { sanitized } : {}),

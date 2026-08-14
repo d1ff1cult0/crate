@@ -16,6 +16,9 @@ const PatchSchema = z
     matchAutoAcceptAt: z.number().min(0).max(1).optional(),
     matchReviewFloorAt: z.number().min(0).max(1).optional(),
     dedupeDryRunOnly: z.boolean().optional(),
+    downloadEnabled: z.boolean().optional(),
+    trashRetentionEnabled: z.boolean().optional(),
+    trashRetentionDays: z.number().int().min(1).max(3650).optional(),
     mixRecencyPenaltyDays: z.number().int().optional(),
     mixRecencyPenaltyWeight: z.number().min(0).max(1).optional(),
   })

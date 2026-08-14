@@ -1,16 +1,19 @@
 /**
  * Duplicates — PROMPT.md §7.7, phase 6.
  *
- * The page is a thin server shell: it reads the groups and hands them to the review
- * component. The one thing it decides is whether applying is even possible, which is the
- * `dedupeDryRunOnly` setting — that stays server-side so the client cannot be tricked
- * into rendering an Apply button the worker would refuse anyway.
+ * Paginated server-side at 50. Counts and reclaimable space are aggregates over the whole
+ * table, not over the page — the screen previously fetched 200 groups and presented that
+ * as the total, which on a library with thousands is a wrong number rather than a
+ * truncated one.
  */
 
+import { paginate, parsePageRequest } from '@crate/core'
 import { prisma } from '@crate/db'
 import { DuplicateReview, type DuplicateGroupView } from '../../components/duplicate-review'
 import { JobButton } from '../../components/job-button'
+import { Pager } from '../../components/pagination'
 import { EmptyState, Panel, Readout } from '../../components/ui'
+import { BULK_DELETE_MIN_CONFIDENCE } from '../../lib/jobs'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,19 +28,63 @@ function differingAttributes(files: Array<Record<string, unknown>>): string[] {
   return out
 }
 
-export default async function DuplicatesPage() {
-  const [groups, operations, setting] = await Promise.all([
+export default async function DuplicatesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; pageSize?: string }>
+}) {
+  const params = await searchParams
+  const request = parsePageRequest(params)
+
+  const [total, setting, operations, aggregates] = await Promise.all([
+    prisma.duplicateGroup.count({ where: { status: 'OPEN' } }),
+    prisma.setting.findUnique({ where: { key: 'app' } }),
+    prisma.trashOperation.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+    // Whole-table aggregates, computed in the database rather than by loading rows.
     prisma.duplicateGroup.findMany({
       where: { status: 'OPEN' },
-      orderBy: [{ confidence: 'desc' }, { createdAt: 'desc' }],
-      take: 200,
-      include: { members: { include: { file: { include: { track: true } } } } },
+      select: {
+        reason: true,
+        confidence: true,
+        members: { where: { isKeeper: false }, select: { file: { select: { sizeBytes: true } } } },
+      },
     }),
-    prisma.trashOperation.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
-    prisma.setting.findUnique({ where: { key: 'app' } }),
   ])
 
-  const dryRunOnly = ((setting?.value ?? {}) as { dedupeDryRunOnly?: boolean }).dedupeDryRunOnly !== false
+  const pagination = paginate(request, total)
+
+  const groups = await prisma.duplicateGroup.findMany({
+    where: { status: 'OPEN' },
+    orderBy: [{ confidence: 'desc' }, { createdAt: 'desc' }],
+    skip: pagination.skip,
+    take: pagination.take,
+    include: { members: { include: { file: { include: { track: true } } } } },
+  })
+
+  const settings = (setting?.value ?? {}) as { dedupeDryRunOnly?: boolean }
+  const dryRunOnly = settings.dedupeDryRunOnly !== false
+
+  let variants = 0
+  let reclaimable = 0n
+  let deletableGroups = 0
+  let deletableFiles = 0
+  let deletableBytes = 0n
+
+  for (const group of aggregates) {
+    if (group.reason === 'VARIANT') {
+      variants += 1
+      continue
+    }
+    const eligible = group.confidence >= BULK_DELETE_MIN_CONFIDENCE
+    if (eligible) deletableGroups += 1
+    for (const member of group.members) {
+      reclaimable += member.file.sizeBytes
+      if (eligible) {
+        deletableFiles += 1
+        deletableBytes += member.file.sizeBytes
+      }
+    }
+  }
 
   const views: DuplicateGroupView[] = groups.map((group) => {
     const first = group.members[0]?.file
@@ -64,14 +111,6 @@ export default async function DuplicatesPage() {
     }
   })
 
-  const variants = views.filter((v) => v.variant).length
-  const reclaimable = groups
-    .filter((g) => g.reason !== 'VARIANT')
-    .reduce(
-      (sum, g) => sum + g.members.filter((m) => !m.isKeeper).reduce((s, m) => s + m.file.sizeBytes, 0n),
-      0n,
-    )
-
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-20">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -80,20 +119,20 @@ export default async function DuplicatesPage() {
             Duplicates
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
-            Grouped most-confident first. Nothing moves until you say so, and nothing is
-            ever deleted.
+            Grouped most-confident first. Nothing is ever deleted outright — files move to
+            the trash with a manifest and can be restored.
           </p>
         </div>
-        <JobButton job="dedupe-scan" label="Run duplicate scan" />
+        <JobButton job="dedupe-scan" label="Rescan for duplicates" />
       </header>
 
-      {views.length > 0 && (
-        <div className="grid gap-4 sm:grid-cols-3">
+      {total > 0 && (
+        <div className="grid gap-4 sm:grid-cols-4">
           <Panel>
-            <Readout label="Groups" value={views.length - variants} />
+            <Readout label="Groups" value={(total - variants).toLocaleString()} />
           </Panel>
           <Panel>
-            <Readout label="Variants kept" value={variants} tone={variants > 0 ? 'warn' : undefined} />
+            <Readout label="Variants kept" value={variants.toLocaleString()} tone={variants > 0 ? 'warn' : undefined} />
           </Panel>
           <Panel>
             <Readout
@@ -102,10 +141,17 @@ export default async function DuplicatesPage() {
               suffix="GB"
             />
           </Panel>
+          <Panel>
+            <Readout
+              label={`At ≥ ${BULK_DELETE_MIN_CONFIDENCE}`}
+              value={deletableFiles.toLocaleString()}
+              suffix="files"
+            />
+          </Panel>
         </div>
       )}
 
-      {views.length === 0 && operations.length === 0 ? (
+      {total === 0 && operations.length === 0 ? (
         <Panel>
           <EmptyState title="Nothing grouped yet" action={<JobButton job="dedupe-scan" label="Run duplicate scan" />}>
             The scan groups the library by identical audio, then fingerprint, then ISRC or
@@ -118,6 +164,12 @@ export default async function DuplicatesPage() {
         <DuplicateReview
           groups={views}
           dryRunOnly={dryRunOnly}
+          bulkDelete={{
+            minConfidence: BULK_DELETE_MIN_CONFIDENCE,
+            groups: deletableGroups,
+            files: deletableFiles,
+            bytes: String(deletableBytes),
+          }}
           operations={operations.map((o) => ({
             id: o.id,
             fileCount: o.fileCount,
@@ -126,6 +178,7 @@ export default async function DuplicatesPage() {
             createdAt: o.createdAt.toISOString(),
             undoneAt: o.undoneAt?.toISOString() ?? null,
           }))}
+          pager={<Pager pagination={pagination} basePath="/duplicates" noun="group" />}
         />
       )}
     </div>
