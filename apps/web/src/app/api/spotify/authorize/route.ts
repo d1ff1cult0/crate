@@ -25,7 +25,9 @@ export const runtime = 'nodejs'
 export async function GET() {
   const row = await prisma.setting.findUnique({ where: { key: 'app' } })
   const settings = (row?.value ?? {}) as { spotifyClientId?: string }
-  const clientId = settings.spotifyClientId?.trim()
+  // Settings wins, so the client ID can be changed from the UI without a redeploy;
+  // SPOTIFY_CLIENT_ID is the fallback so a configured deployment works out of the box.
+  const clientId = settings.spotifyClientId?.trim() || process.env.SPOTIFY_CLIENT_ID?.trim()
 
   if (!clientId) {
     return Response.json(

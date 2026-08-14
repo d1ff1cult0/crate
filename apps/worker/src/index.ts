@@ -11,6 +11,12 @@ import type { Job } from 'bullmq'
 import { runHarvest, runIsrcBackfill } from './jobs/harvest.js'
 import { runFingerprintFile, runFingerprintSweep } from './jobs/fingerprint.js'
 import { runMatchSweep } from './jobs/match.js'
+import {
+  materializePlaylist,
+  triggerScan,
+  writeAllPlaylists,
+  writePlaylist,
+} from './jobs/playlist.js'
 import { runLibraryScan } from './jobs/scan.js'
 import { JobRunContext } from './lib/jobrun.js'
 import { closeAll, createWorker, type QueueName } from './lib/queues.js'
@@ -82,6 +88,24 @@ async function main() {
     createWorker(
       'match',
       tracked('match', async (ctx, job) => runMatchSweep(ctx, { all: job.data?.all === true })),
+    ),
+
+    createWorker(
+      'playlist-write',
+      tracked('playlist-write', async (ctx, job) => {
+        if (job.name === 'write-all') return writeAllPlaylists(ctx)
+
+        const sourcePlaylistId = String(job.data?.sourcePlaylistId ?? '')
+        if (!sourcePlaylistId) return
+        // Materialize first so the item list reflects the current match state, then
+        // write. Doing it in this order is what makes "fill gaps" show up immediately
+        // after a download lands.
+        const playlistId = await materializePlaylist(ctx, sourcePlaylistId)
+        if (!playlistId) return
+        const result = await writePlaylist(ctx, playlistId)
+        await triggerScan(ctx)
+        return result
+      }),
     ),
 
     createWorker(
