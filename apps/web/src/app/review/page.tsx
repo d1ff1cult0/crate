@@ -87,7 +87,7 @@ export default async function ReviewPage({
         <>
           <ReviewQueue items={items} totalRemaining={total} />
           <Panel>
-            <Pager pagination={pagination} basePath="/review" noun="match" />
+            <Pager pagination={pagination} basePath="/review" noun="match" plural="matches" />
           </Panel>
         </>
       )}

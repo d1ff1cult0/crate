@@ -113,3 +113,23 @@ describe('describeRange', () => {
     )
   })
 })
+
+describe('describeRange pluralisation', () => {
+  it('uses the supplied plural when appending "s" would be wrong', () => {
+    expect(describeRange(paginate({ page: 1, pageSize: 50 }, 51), 'match', 'matches')).toBe(
+      'Showing 1–50 of 51 matches',
+    )
+  })
+
+  it('uses the singular for exactly one', () => {
+    expect(describeRange(paginate({ page: 1, pageSize: 50 }, 1), 'match', 'matches')).toBe(
+      'Showing 1–1 of 1 match',
+    )
+  })
+
+  it('uses the plural in the empty case', () => {
+    expect(describeRange(paginate({ page: 1, pageSize: 50 }, 0), 'match', 'matches')).toBe(
+      'No matches',
+    )
+  })
+})

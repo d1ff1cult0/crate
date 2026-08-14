@@ -88,7 +88,11 @@ export function paginate(request: PageRequest, total: number): Pagination {
 }
 
 /** "Showing 51–100 of 3,412" — the honest version of a page-sized counter. */
-export function describeRange(pagination: Pagination, noun = 'item'): string {
-  if (pagination.total === 0) return `No ${noun}s`
-  return `Showing ${pagination.from.toLocaleString()}–${pagination.to.toLocaleString()} of ${pagination.total.toLocaleString()} ${noun}${pagination.total === 1 ? '' : 's'}`
+export function describeRange(pagination: Pagination, noun = 'item', plural?: string): string {
+  // `plural` exists because appending "s" is wrong often enough to matter — "match"
+  // becomes "matches", and "51 matchs" undermines every other number on the page.
+  const plurals = plural ?? `${noun}s`
+  if (pagination.total === 0) return `No ${plurals}`
+  const word = pagination.total === 1 ? noun : plurals
+  return `Showing ${pagination.from.toLocaleString()}–${pagination.to.toLocaleString()} of ${pagination.total.toLocaleString()} ${word}`
 }

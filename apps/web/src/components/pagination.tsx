@@ -18,11 +18,14 @@ export function Pager({
   pagination,
   basePath,
   noun = 'item',
+  plural,
   extraParams,
 }: {
   pagination: Pagination
   basePath: string
   noun?: string
+  /** Supply when appending "s" is wrong — "match" → "matches", not "matchs". */
+  plural?: string
   /** Preserved across page changes, e.g. a filter. */
   extraParams?: Record<string, string>
 }) {
@@ -32,10 +35,11 @@ export function Pager({
     return `${basePath}?${params.toString()}`
   }
 
+  const plurals = plural ?? `${noun}s`
   const range =
     pagination.total === 0
-      ? `No ${noun}s`
-      : `Showing ${pagination.from.toLocaleString()}–${pagination.to.toLocaleString()} of ${pagination.total.toLocaleString()} ${noun}${pagination.total === 1 ? '' : 's'}`
+      ? `No ${plurals}`
+      : `Showing ${pagination.from.toLocaleString()}–${pagination.to.toLocaleString()} of ${pagination.total.toLocaleString()} ${pagination.total === 1 ? noun : plurals}`
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline pt-3">
