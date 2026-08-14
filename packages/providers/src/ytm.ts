@@ -77,6 +77,29 @@ function run(
   })
 }
 
+/**
+ * Extensions that count as the audio we asked for. yt-dlp also writes thumbnails and
+ * sidecars into the same directory, so "the first new file" is not good enough.
+ */
+const AUDIO_EXTENSIONS = new Set([
+  '.opus', '.ogg', '.m4a', '.mp3', '.aac', '.flac', '.wav', '.webm',
+])
+
+/**
+ * Point yt-dlp at a JavaScript runtime.
+ *
+ * YouTube requires JS execution to decipher stream signatures. yt-dlp only enables Deno
+ * by default, and without any runtime it warns that extraction is deprecated, drops to a
+ * reduced set of formats, and intermittently returns `HTTP Error 403: Forbidden` on
+ * perfectly available tracks — observed directly, on a video that downloaded fine
+ * moments earlier.
+ *
+ * Node is always available: the worker image is built FROM node, and this code is running
+ * inside that runtime. Naming it explicitly costs nothing and removes a whole class of
+ * intermittent failure.
+ */
+const JS_RUNTIME_ARGS = ['--js-runtimes', `node:${process.execPath}`]
+
 /** yt-dlp progress lines look like "[download]  42.3% of 4.21MiB at ...". */
 const PROGRESS_RE = /\[download\]\s+([\d.]+)%/
 
@@ -92,11 +115,37 @@ interface YtDlpEntry {
   abr?: number
 }
 
+
+/**
+ * Space out calls to honour `config.rateLimit`.
+ *
+ * `ProviderConfig.rateLimit` has been declared since the interface was written and was
+ * never actually enforced anywhere — nothing read it. That showed up as intermittent
+ * `HTTP Error 403: Forbidden` from YouTube: a search fetches metadata for ten results and
+ * a download follows immediately, and with the queue running three at a time that is a
+ * burst YouTube treats as abuse. The same URLs download fine a few seconds apart.
+ *
+ * Per instance rather than global, because the provider set is rebuilt per job; the
+ * worker's own queue concurrency is what bounds the rest.
+ */
+function makeSpacer(rate: ProviderConfig['rateLimit']): () => Promise<void> {
+  const minIntervalMs = rate.requests > 0 ? Math.ceil(rate.per / rate.requests) : 0
+  let last = 0
+  return async () => {
+    if (minIntervalMs <= 0) return
+    const wait = last + minIntervalMs - Date.now()
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    last = Date.now()
+  }
+}
+
 export interface YtmProviderOptions {
   config?: Partial<ProviderConfig>
   /** Overridable for tests. */
   runner?: typeof run
   ytDlpPath?: string
+  /** Overridable so tests do not wait out the rate limit. */
+  spacer?: () => Promise<void>
 }
 
 export class YtmProvider implements DownloadProvider {
@@ -104,11 +153,13 @@ export class YtmProvider implements DownloadProvider {
   readonly config: ProviderConfig
   private readonly run: typeof run
   private readonly bin: string
+  private readonly space: () => Promise<void>
 
   constructor(opts: YtmProviderOptions = {}) {
     this.config = { ...DEFAULT_CONFIG, ...opts.config }
     this.run = opts.runner ?? run
     this.bin = opts.ytDlpPath ?? 'yt-dlp'
+    this.space = opts.spacer ?? makeSpacer(this.config.rateLimit)
   }
 
   async health(): Promise<HealthStatus> {
@@ -146,10 +197,12 @@ export class YtmProvider implements DownloadProvider {
 
     let result: RunResult
     try {
+      await this.space()
       result = await this.run(
         this.bin,
         [
           target,
+          ...JS_RUNTIME_ARGS,
           '--dump-json',
           '--flat-playlist',
           '--no-warnings',
@@ -206,10 +259,39 @@ export class YtmProvider implements DownloadProvider {
     const before = new Set(await readdir(destinationDir).catch(() => []))
     const template = join(destinationDir, '%(id)s.%(ext)s')
 
-    const result = await this.run(
+    await this.space()
+    let result = await this.runDownload(candidate.id, template, onProgress, false)
+
+    // A poisoned player cache is the single most confusing failure this provider has.
+    //
+    // yt-dlp caches YouTube player/signature data under ~/.cache/yt-dlp. When that data
+    // goes stale it returns `HTTP Error 403: Forbidden` for videos that are perfectly
+    // available — and because the cache lives as long as the container, EVERY download
+    // fails from then on while the same URL works from a fresh environment. Diagnosed by
+    // clearing the cache and watching identical commands start succeeding again.
+    //
+    // So a 403 is retried exactly once with the cache bypassed. If that works, the cache
+    // was the problem; if it does not, the failure is real and reported as such.
+    if (result.code !== 0 && /403|forbidden/i.test(result.stderr)) {
+      result = await this.runDownload(candidate.id, template, onProgress, true)
+    }
+
+    return this.collect(candidate, destinationDir, before, result)
+  }
+
+  /** One yt-dlp download invocation. `bypassCache` is the 403 self-heal. */
+  private async runDownload(
+    videoId: string,
+    template: string,
+    onProgress: (p: Progress) => void,
+    bypassCache: boolean,
+  ): Promise<RunResult> {
+    return this.run(
       this.bin,
       [
-        `https://music.youtube.com/watch?v=${candidate.id}`,
+        `https://music.youtube.com/watch?v=${videoId}`,
+        ...JS_RUNTIME_ARGS,
+        ...(bypassCache ? ['--no-cache-dir'] : []),
         '--extract-audio',
         // Opus is YouTube's native codec, so this avoids a needless re-encode.
         '--audio-format',
@@ -217,7 +299,16 @@ export class YtmProvider implements DownloadProvider {
         '--audio-quality',
         '0',
         '--embed-metadata',
-        '--embed-thumbnail',
+        // NO --embed-thumbnail, deliberately. Two reasons, in order of importance:
+        //
+        //  1. The post-processing chain fetches cover art itself (§7.6 step 4) from the
+        //     harvested Spotify payload, Cover Art Archive or Deezer — real album art,
+        //     rather than a YouTube video thumbnail that is square, often letterboxed and
+        //     sometimes just the uploader's banner.
+        //  2. Embedding a thumbnail into Opus needs the Python `mutagen` module, and
+        //     without it yt-dlp fails the *postprocessing* step and exits non-zero having
+        //     already downloaded the audio perfectly well. We were throwing that file
+        //     away over art we were about to replace anyway.
         '--no-playlist',
         '--newline',
         '-o',
@@ -231,18 +322,34 @@ export class YtmProvider implements DownloadProvider {
         },
       },
     )
+  }
 
-    if (result.code !== 0) {
-      throw new Error(`yt-dlp failed (${result.code}): ${result.stderr.slice(-300).trim()}`)
-    }
-
+  /** Work out what landed on disk and whether it counts as success. */
+  private async collect(
+    candidate: Candidate,
+    destinationDir: string,
+    before: Set<string>,
+    result: RunResult,
+  ): Promise<DownloadedFile> {
     // Identify what actually landed rather than assuming the extension.
     const after = await readdir(destinationDir)
     const created = after.filter((f) => !before.has(f) && f.startsWith(candidate.id))
-    const file = created[0]
-    if (!file) {
-      throw new Error('yt-dlp reported success but produced no file')
+    const audio = created.find((f) => AUDIO_EXTENSIONS.has(f.slice(f.lastIndexOf('.'))))
+
+    if (!audio) {
+      throw new Error(
+        result.code !== 0
+          ? `yt-dlp failed (${result.code}): ${result.stderr.slice(-300).trim()}`
+          : 'yt-dlp reported success but produced no audio file',
+      )
     }
+
+    // A non-zero exit with the audio already on disk means a POST-processing step failed
+    // — a missing optional dependency, an unwritable tag, a thumbnail conversion. The
+    // audio itself is fine, and the file is about to be put through our own verification
+    // (real audio, expected duration, not silent, not truncated) before anything lets it
+    // near the library. So judge it on the file, not on yt-dlp's exit code.
+    const file = audio
 
     const path = join(destinationDir, file)
     const { statSync } = await import('node:fs')

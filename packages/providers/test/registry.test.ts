@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { YtmProvider } from '../src/ytm.js'
 import { describe, expect, it, vi } from 'vitest'
 import { acquireTrack, orderProviders, queryString } from '../src/registry.js'
 import type { Candidate, DownloadProvider, ProviderConfig, TrackQuery } from '../src/types.js'
@@ -225,5 +229,114 @@ describe('acquireTrack', () => {
 describe('queryString', () => {
   it('formats a stable key for the 24h exhaustion check', () => {
     expect(queryString(query)).toBe('Radiohead - Karma Police')
+  })
+})
+
+/**
+ * yt-dlp exits non-zero when a POST-processing step fails — a missing optional Python
+ * module, an unwritable tag, a thumbnail conversion — even though the audio downloaded
+ * perfectly. Production hit exactly that: `--embed-thumbnail` on Opus needs `mutagen`,
+ * yt-dlp exited 1, and the provider threw away a complete 5.8 MB file.
+ */
+describe('YtmProvider.download resilience', () => {
+  const candidate = { id: 'vid123', title: 'Song', artist: 'Artist' }
+
+  it('keeps the audio when yt-dlp fails AFTER producing it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crate-ytm-'))
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async () => {
+        // The download succeeded; postprocessing did not.
+        await writeFile(join(dir, 'vid123.opus'), 'audio bytes')
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'ERROR: Postprocessing: module mutagen was not found.',
+        }
+      },
+    })
+
+    const file = await provider.download(candidate, dir, () => undefined)
+    expect(file.path).toBe(join(dir, 'vid123.opus'))
+    expect(file.format).toBe('opus')
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('still throws when the failure produced no audio at all', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crate-ytm-'))
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async () => ({ code: 1, stdout: '', stderr: 'ERROR: Video unavailable' }),
+    })
+
+    await expect(provider.download(candidate, dir, () => undefined)).rejects.toThrow(
+      /Video unavailable/,
+    )
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('ignores non-audio leftovers like thumbnails when picking the result', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crate-ytm-'))
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async () => {
+        await writeFile(join(dir, 'vid123.webp'), 'thumb')
+        await writeFile(join(dir, 'vid123.png'), 'thumb')
+        await writeFile(join(dir, 'vid123.opus'), 'audio bytes')
+        return { code: 0, stdout: '', stderr: '' }
+      },
+    })
+
+    const file = await provider.download(candidate, dir, () => undefined)
+    expect(file.path.endsWith('.opus')).toBe(true)
+    await rm(dir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * A stale yt-dlp player cache returns `HTTP Error 403: Forbidden` for perfectly available
+ * videos, and because the cache outlives the container it poisons EVERY download from
+ * then on. Diagnosed by clearing ~/.cache/yt-dlp and watching identical commands succeed.
+ */
+describe('YtmProvider 403 cache self-heal', () => {
+  const candidate = { id: 'vid403', title: 'Song', artist: 'Artist' }
+
+  it('retries once with the cache bypassed after a 403, and succeeds', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crate-ytm-'))
+    const calls: string[][] = []
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async (_cmd, args) => {
+        calls.push(args)
+        if (!args.includes('--no-cache-dir')) {
+          return { code: 1, stdout: '', stderr: 'ERROR: unable to download video data: HTTP Error 403: Forbidden' }
+        }
+        await writeFile(join(dir, 'vid403.opus'), 'audio')
+        return { code: 0, stdout: '', stderr: '' }
+      },
+    })
+
+    const file = await provider.download(candidate, dir, () => undefined)
+    expect(file.path.endsWith('vid403.opus')).toBe(true)
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).not.toContain('--no-cache-dir')
+    expect(calls[1]).toContain('--no-cache-dir')
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('does not retry a failure that is not a 403', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crate-ytm-'))
+    let calls = 0
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async () => {
+        calls += 1
+        return { code: 1, stdout: '', stderr: 'ERROR: Video unavailable' }
+      },
+    })
+
+    await expect(provider.download(candidate, dir, () => undefined)).rejects.toThrow(/unavailable/)
+    expect(calls).toBe(1)
+    await rm(dir, { recursive: true, force: true })
   })
 })

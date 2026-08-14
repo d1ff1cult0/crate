@@ -85,11 +85,17 @@ export const RUNNABLE: Record<string, RunnableJob> = {
     name: 'enqueue-missing',
     description: 'Queueing a download for everything the matcher marked missing',
   },
+  'download-reconcile': {
+    queue: 'download',
+    name: 'reconcile',
+    description:
+      'Checking every outstanding request has a queue job behind it, and adding any that do not',
+  },
   'download-retry-abandoned': {
     queue: 'download',
     name: 'enqueue-missing',
     data: { retryAbandoned: true },
-    description: 'Retrying tracks no provider could find last time',
+    description: 'Retrying tracks that failed or that no provider could find last time',
   },
   'playlists-write-all': {
     queue: 'playlist-write',

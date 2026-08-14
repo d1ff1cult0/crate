@@ -12,6 +12,7 @@
  * separator everyone reaches for first (DECISIONS A19).
  */
 
+import { bullPriority, downloadJobId } from '@crate/core'
 import { Queue } from 'bullmq'
 import { Redis } from 'ioredis'
 
@@ -48,18 +49,79 @@ export async function enqueueJob(
   data: Record<string, unknown> = {},
   opts: { jobId?: string } = {},
 ): Promise<void> {
-  const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: null,
-  })
-  try {
-    const q = new Queue(queue, { connection })
+  await withQueue(queue, async (q) => {
     await q.add(name, data, {
       ...(opts.jobId ? { jobId: opts.jobId } : {}),
       removeOnComplete: { count: 200 },
       removeOnFail: { count: 500 },
     })
-    await q.close()
+  })
+}
+
+/**
+ * Run a batch of queue work over ONE connection.
+ *
+ * Filling the gaps in a large playlist touches hundreds of jobs; opening and quitting a
+ * Redis connection per job would be absurd, and leaking one per request worse.
+ */
+export async function withQueue<T>(
+  queue: QueueName,
+  fn: (queue: Queue) => Promise<T>,
+): Promise<T> {
+  const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    maxRetriesPerRequest: null,
+  })
+  const q = new Queue(queue, { connection })
+  try {
+    return await fn(q)
   } finally {
+    await q.close()
     await connection.quit()
   }
+}
+
+/**
+ * Guarantee a pending download job for each request. Returns how many were added.
+ *
+ * Mirrors `ensureJobFor` in the worker, including the rule that matters most: a job id
+ * still occupied by a **completed or failed** job blocks `add()` silently, so the stale
+ * job has to be removed first. Skipping that is indistinguishable from success and leaves
+ * the request stuck — which is the failure this whole change exists to fix.
+ *
+ * Takes the whole batch so one connection covers a playlist's worth of gaps.
+ */
+export async function ensureDownloadJobs(
+  requests: Array<{ id: string; priority: number }>,
+): Promise<number> {
+  if (requests.length === 0) return 0
+
+  return withQueue('download', async (queue) => {
+    let added = 0
+
+    for (const request of requests) {
+      const id = downloadJobId(request.id)
+      const existing = await queue.getJob(id)
+
+      if (existing) {
+        const state = await existing.getState()
+        // A pending job is already going to run; leave it exactly as it is.
+        if (state !== 'completed' && state !== 'failed' && state !== 'unknown') continue
+        await existing.remove().catch(() => undefined)
+      }
+
+      await queue.add(
+        'download',
+        { requestId: request.id },
+        {
+          jobId: id,
+          priority: bullPriority(request.priority),
+          removeOnComplete: { count: 200 },
+          removeOnFail: { count: 500 },
+        },
+      )
+      added += 1
+    }
+
+    return added
+  })
 }

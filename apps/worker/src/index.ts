@@ -10,6 +10,7 @@ import { prisma } from '@crate/db'
 import type { Job } from 'bullmq'
 import { applyDedupe, runDedupeScan } from './jobs/dedupe.js'
 import { enqueueMissing, retryAfterRejection, runDownload } from './jobs/download.js'
+import { BOOT_AUTO_RECONCILE_MAX, reconcileDownloadQueue } from './lib/download-queue.js'
 import { runHarvest, runIsrcBackfill } from './jobs/harvest.js'
 import { runFingerprintFile, runFingerprintSweep } from './jobs/fingerprint.js'
 import { runMatchSweep } from './jobs/match.js'
@@ -106,6 +107,9 @@ async function main() {
           return enqueueMissing(ctx, {
             retryAbandoned: job.data?.retryAbandoned === true,
           })
+        }
+        if (job.name === 'reconcile') {
+          return reconcileDownloadQueue(ctx)
         }
         return runDownload(ctx, {
           requestId: String(job.data.requestId),
@@ -225,6 +229,34 @@ async function main() {
   }
 
   await registerSchedules()
+
+  // Self-heal on boot.
+  //
+  // A DownloadRequest row and its BullMQ job live in two stores with no transaction
+  // between them, so they can drift — and when they do the symptom is silence: rows sit
+  // at QUEUED, Redis is empty, and nothing errors because nothing was ever asked to run.
+  // Reconciling at startup means that state cannot outlive a restart, which is the one
+  // recovery action an operator is guaranteed to try.
+  try {
+    const bootCtx = await JobRunContext.start('download', 'reconcile-on-boot')
+    // Capped: small drift is repaired silently, a large backlog is reported and left for
+    // an explicit decision rather than starting a mass download seconds after a restart.
+    const result = await reconcileDownloadQueue(bootCtx, { autoLimit: BOOT_AUTO_RECONCILE_MAX })
+    await bootCtx.succeed(
+      result.heldBack
+        ? `${result.heldBack} orphaned download request(s) found — not released automatically`
+        : result.enqueued > 0
+          ? `Re-queued ${result.enqueued} orphaned download request(s) on boot`
+          : undefined,
+    )
+    if (result.enqueued > 0 || result.heldBack) {
+      log('download queue reconciliation on boot', { ...result })
+    }
+  } catch (err) {
+    // Never let a reconciliation failure stop the worker from starting.
+    log('boot reconciliation failed', { error: err instanceof Error ? err.message : String(err) })
+  }
+
   log('worker ready', { queues: workers.map((w) => w.name) })
 
   const shutdown = async (signal: string) => {

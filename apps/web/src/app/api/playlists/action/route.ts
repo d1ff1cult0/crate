@@ -6,9 +6,8 @@
  */
 
 import { prisma } from '@crate/db'
-import { Queue } from 'bullmq'
-import { Redis } from 'ioredis'
 import { z } from 'zod'
+import { ensureDownloadJobs, enqueueJob, jobId } from '../../../../lib/queue'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -50,35 +49,58 @@ export async function POST(request: Request) {
     const ids = [...new Set([...items, ...unmatched].map((i) => i.sourceTrackId))]
     if (ids.length === 0) return Response.json({ ok: true, queued: 0 })
 
-    // Skip anything already queued or in flight, so pressing twice is harmless.
-    const existing = await prisma.downloadRequest.findMany({
-      where: { sourceTrackId: { in: ids }, status: { in: ['QUEUED', 'RUNNING', 'SUCCEEDED'] } },
+    // Everything already satisfied or deliberately held is left alone. Everything else —
+    // INCLUDING rows that already sit at QUEUED — goes through `ensureDownloadJob`.
+    //
+    // That last part is the bug this endpoint used to have, and it was invisible: it
+    // wrote DownloadRequest rows and returned without ever adding a BullMQ job, then
+    // treated "a row already exists" as "the work is already scheduled" on the next
+    // press. 168 requests accumulated in the database with nothing at all in Redis, no
+    // attempts, no job runs and no errors, because nothing had failed — the work had
+    // simply never been asked for. Pressing this now repairs those rows rather than
+    // skipping past them.
+    const settled = await prisma.downloadRequest.findMany({
+      where: { sourceTrackId: { in: ids }, status: { in: ['SUCCEEDED', 'MANUAL_HOLD'] } },
       select: { sourceTrackId: true },
     })
-    const skip = new Set(existing.map((e) => e.sourceTrackId))
-    const toCreate = ids.filter((id) => !skip.has(id))
+    const skip = new Set(settled.map((e) => e.sourceTrackId))
+    const wanted = ids.filter((id) => !skip.has(id))
 
-    if (toCreate.length > 0) {
-      await prisma.downloadRequest.createMany({
-        data: toCreate.map((sourceTrackId) => ({ sourceTrackId, status: 'QUEUED' as const })),
+    const existingRows = await prisma.downloadRequest.findMany({
+      where: { sourceTrackId: { in: wanted } },
+      orderBy: { createdAt: 'desc' },
+    })
+    const byTrack = new Map<string, (typeof existingRows)[number]>()
+    for (const row of existingRows) if (!byTrack.has(row.sourceTrackId)) byTrack.set(row.sourceTrackId, row)
+
+    const toEnqueue: Array<{ id: string; priority: number }> = []
+    let created = 0
+
+    for (const sourceTrackId of wanted) {
+      const existing = byTrack.get(sourceTrackId)
+      // Abandoned means every provider was already tried; don't silently retry it here.
+      if (existing?.status === 'ABANDONED') continue
+
+      if (existing) {
+        toEnqueue.push({ id: existing.id, priority: existing.priority })
+        continue
+      }
+      const request = await prisma.downloadRequest.create({
+        data: { sourceTrackId, status: 'QUEUED' },
       })
+      created += 1
+      toEnqueue.push({ id: request.id, priority: request.priority })
     }
-    return Response.json({ ok: true, queued: toCreate.length })
+
+    const enqueued = await ensureDownloadJobs(toEnqueue)
+    return Response.json({ ok: true, queued: enqueued, created })
   }
 
-  const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: null,
-  })
-  try {
-    const queue = new Queue('playlist-write', { connection })
-    await queue.add(
-      'write-playlist',
-      { sourcePlaylistId: source.id },
-      { jobId: `write__${source.id}` },
-    )
-    await queue.close()
-    return Response.json({ ok: true })
-  } finally {
-    await connection.quit()
-  }
+  await enqueueJob(
+    'playlist-write',
+    'write-playlist',
+    { sourcePlaylistId: source.id },
+    { jobId: jobId('write', source.id) },
+  )
+  return Response.json({ ok: true })
 }

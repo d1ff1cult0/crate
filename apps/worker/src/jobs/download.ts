@@ -30,6 +30,7 @@ import {
   type DownloadProvider,
   type TrackQuery,
 } from '@crate/providers'
+import { reconcileDownloadQueue, requestDownload } from '../lib/download-queue.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings, type Settings } from '../lib/settings.js'
@@ -79,7 +80,7 @@ async function recentlyExhausted(provider: string, query: string): Promise<boole
 }
 
 export interface DownloadResult {
-  status: 'SUCCEEDED' | 'ABANDONED' | 'SKIPPED'
+  status: 'SUCCEEDED' | 'ABANDONED' | 'FAILED' | 'SKIPPED'
   provider?: string
   detail: string
 }
@@ -202,11 +203,33 @@ export async function runDownload(
 
   if (!result.file) {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined)
-    return abandon(
-      ctx,
-      request.id,
-      `No provider could supply this track. Tried: ${result.attempts.map((a) => `${a.provider} (${a.outcome})`).join(', ') || 'none'}`,
+    const summary = result.attempts.map((a) => `${a.provider} (${a.outcome})`).join(', ') || 'none'
+
+    // ABANDONED is a CONCLUSION, not a synonym for "this attempt did not work."
+    //
+    // It means every provider was asked and none has this track — a settled fact that
+    // stops further attempts until the owner explicitly retries. A transient failure is
+    // a completely different thing: a 403 from YouTube throttling, a timeout, a network
+    // blip. Treating those as ABANDONED would permanently write off tracks that are
+    // perfectly obtainable an hour later, and on a bulk drain it would do that to
+    // hundreds at once. Observed for real: the same video downloaded fine, then returned
+    // `HTTP Error 403: Forbidden` under repeated requests, then worked again.
+    const transient = result.attempts.some(
+      (a) => a.outcome === 'ERROR' || a.outcome === 'TIMEOUT' || a.outcome === 'RATE_LIMITED',
     )
+
+    if (transient) {
+      await prisma.downloadRequest.update({
+        where: { id: request.id },
+        data: { status: 'FAILED', lastError: `Temporary failure. Tried: ${summary}` },
+      })
+      await ctx.log('warn', `Temporary failure, will retry later: ${summary}`, {
+        note: 'Left as FAILED rather than ABANDONED — retry it from the Queue screen, or it will be picked up by the next retry sweep.',
+      })
+      return { status: 'FAILED', detail: `temporary failure: ${summary}` }
+    }
+
+    return abandon(ctx, request.id, `No provider could supply this track. Tried: ${summary}`)
   }
 
   await ctx.log('info', `Got it from ${result.provider}`, {
@@ -261,11 +284,13 @@ export async function retryAfterRejection(
     return
   }
 
+  // A distinct id per exclusion round, so this is a genuinely new job rather than an
+  // add() silently swallowed by the completed one it is retrying (see core/download-queue).
   await enqueue(
     'download',
     'download',
     { requestId, exclude },
-    { jobId: jobId('dl', requestId, exclude.length) },
+    { jobId: jobId('dl', requestId, 'retry', exclude.length) },
   )
 }
 
@@ -293,7 +318,7 @@ async function abandon(
 export async function enqueueMissing(
   ctx: JobRunContext,
   opts: { limit?: number; retryAbandoned?: boolean } = {},
-): Promise<{ queued: number; alreadyQueued: number }> {
+): Promise<{ queued: number; alreadyQueued: number; reconciled: number }> {
   const missing = await prisma.match.findMany({
     where: { status: 'MISSING' },
     select: {
@@ -307,39 +332,27 @@ export async function enqueueMissing(
   let alreadyQueued = 0
 
   for (const match of missing) {
-    const existing = await prisma.downloadRequest.findFirst({
-      where: { sourceTrackId: match.sourceTrackId },
-      orderBy: { createdAt: 'desc' },
+    // `requestDownload` reuses an existing row and — critically — still guarantees a job
+    // behind it. The old code here skipped any track that already had a request,
+    // treating "a row exists" as "the work is scheduled". For 168 rows written by a
+    // producer that never enqueued anything, it was not, and this was the button that
+    // should have rescued them and instead reported them all as already queued.
+    const result = await requestDownload(match.sourceTrackId, {
+      priority: match.sourceTrack._count.memberships,
+      ...(opts.retryAbandoned ? { retryAbandoned: true } : {}),
     })
-
-    if (existing && !(opts.retryAbandoned && existing.status === 'ABANDONED')) {
-      alreadyQueued += 1
-      continue
-    }
-
-    const request =
-      existing && opts.retryAbandoned
-        ? await prisma.downloadRequest.update({
-            where: { id: existing.id },
-            data: { status: 'QUEUED', lastError: null },
-          })
-        : await prisma.downloadRequest.create({
-            data: {
-              sourceTrackId: match.sourceTrackId,
-              status: 'QUEUED',
-              priority: match.sourceTrack._count.memberships,
-            },
-          })
-
-    await enqueue(
-      'download',
-      'download',
-      { requestId: request.id },
-      { jobId: jobId('dl', request.id), priority: Math.max(1, 100 - request.priority) },
-    )
-    queued += 1
+    if (result.enqueued) queued += 1
+    else alreadyQueued += 1
   }
 
-  await ctx.log('info', `Queued ${queued} download(s)`, { alreadyQueued })
-  return { queued, alreadyQueued }
+  // Anything outstanding that no longer maps to a MISSING match — a request whose match
+  // was since resolved by hand, or one left orphaned by a worker that died mid-flight —
+  // is swept up here rather than left to sit forever.
+  const reconciled = await reconcileDownloadQueue(ctx)
+
+  await ctx.log('info', `Queued ${queued} download(s)`, {
+    alreadyQueued,
+    reconciled: reconciled.enqueued,
+  })
+  return { queued, alreadyQueued, reconciled: reconciled.enqueued }
 }
