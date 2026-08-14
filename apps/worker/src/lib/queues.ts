@@ -95,6 +95,21 @@ export function getQueue(name: QueueName): Queue {
 }
 
 /**
+ * Build a deterministic BullMQ job id from parts.
+ *
+ * BullMQ REJECTS custom ids containing ":" at runtime — it uses the colon as its own
+ * Redis key separator, and the failure is an opaque "Custom Id cannot contain :" thrown
+ * when the job is added, not when it is defined. Since colon-delimited ids are the
+ * obvious thing to reach for, every id goes through here instead.
+ */
+export function jobId(...parts: Array<string | number>): string {
+  return parts
+    .map((p) => String(p).replace(/[:\s]+/g, '-'))
+    .filter(Boolean)
+    .join('__')
+}
+
+/**
  * Enqueue with a DETERMINISTIC job id (§4: "Idempotency everywhere"). BullMQ refuses a
  * duplicate id while the job is active or waiting, so re-running a sync converges
  * rather than duplicating.

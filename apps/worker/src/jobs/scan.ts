@@ -20,7 +20,7 @@ import { normalizeTrack, qualityScore } from '@crate/core'
 import { prisma } from '@crate/db'
 import { parseFile } from 'music-metadata'
 import type { JobRunContext } from '../lib/jobrun.js'
-import { enqueue } from '../lib/queues.js'
+import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings } from '../lib/settings.js'
 
 const AUDIO_EXTENSIONS = new Set([
@@ -330,7 +330,7 @@ export async function runLibraryScan(
     if (settings.fingerprintEnabled) {
       // Separate low-priority queue: fingerprinting is CPU-heavy and must not starve
       // the box during a scan (§7.4).
-      await enqueue('fingerprint', 'fingerprint-file', { fileId, path }, { jobId: `fp:${fileId}` })
+      await enqueue('fingerprint', 'fingerprint-file', { fileId, path }, { jobId: jobId("fp", fileId) })
     }
 
     if (scanned % 50 === 0) await ctx.setProgress(scanned, undefined, `${scanned} files, ${added} new or changed`)
@@ -350,7 +350,7 @@ export async function runLibraryScan(
   await ctx.log('info', 'Scan complete', { scanned, added, unchanged, missing: goneIds.length })
 
   // New library state means previously-missing matches may now resolve (§7.10).
-  await enqueue('match', 'match-sweep', {}, { jobId: `sweep:${Date.now()}` })
+  await enqueue('match', 'match-sweep', {}, { jobId: jobId("sweep", Date.now()) })
 
   return { scanned, added, unchanged, missing: goneIds.length }
 }

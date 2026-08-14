@@ -143,6 +143,33 @@ Appended as phases complete. A phase is "done" only against its `PROMPT.md` §10
 
 | Phase | Status | Notes |
 |---|---|---|
-| 1 — Foundations | in progress | |
-| 2 — Library | not started | |
-| 3 — Spotify + import + matching | not started | |
+| 1 — Foundations | **done** | Verified end to end against real Postgres/Redis: pages render, a job runs, progress streams over SSE. |
+| 1.5 — Harvest | **code complete, not yet run** | Orchestrator + rate limiter fully tested against a fake Spotify (34 tests). Needs a real Spotify app + OAuth consent to run for real — see "What's left" below. |
+| 2 — Library | **core done** | Scanner, ffprobe, audio-stream hashing, fpcalc fingerprinting and the AcoustID/MusicBrainz ISRC backfill all verified against real audio files. Library UI renders. |
+| 3 — Spotify + import + matching | partial | Matching cascade and importers built and tested; paste-box resolver and review queue working. Playlist/queue screens still empty states. |
+| 4–8 | not started | |
+
+### Verified, not assumed
+
+The following were exercised against real infrastructure rather than only typechecked:
+
+- Prisma migration applied to a real PostgreSQL 17.
+- Web app builds and every route returns 200.
+- Redis pub/sub → SSE → browser confirmed by publishing an event and reading it off the stream.
+- Worker boots with all queues and processes a job.
+- A library scan over real FLAC and MP3 files produced correct rows: audio-stream `contentHash`, chromaprint fingerprints, quality scores (FLAC 106 vs low-bitrate MP3 30), and `"Paranoid Android - Remastered 2017"` normalised to `paranoid android` — the remaster suffix stripped as noise, exactly as §7.3 requires.
+- The scan chained into fingerprinting and then a match sweep automatically.
+
+### A19. BullMQ rejects `:` in custom job IDs
+
+Found by running it, not by reading it. Every deterministic job ID in the codebase used colons (`fp:${fileId}`, `schedule:${name}`) and BullMQ throws `Custom Id cannot contain :` at enqueue time — which would have broken the idempotency §4 requires, silently, everywhere. All IDs now go through a `jobId()` helper in `apps/worker/src/lib/queues.ts` that sanitises separators.
+
+### What's left before the harvest can actually run
+
+Phase 1.5 is code-complete but has never talked to Spotify. To run it the owner needs to:
+
+1. Create a Spotify app at developer.spotify.com and put its client ID in Settings.
+2. Set the redirect URI to `<PUBLIC_URL>/api/spotify/callback`.
+3. Complete the OAuth consent flow (read-only scopes only, per D4).
+
+The OAuth callback route and the connections editor UI are the remaining gap between "tested against a fake Spotify" and "harvested". Given the 2026-09-01 deadline this is the highest-priority remaining work.

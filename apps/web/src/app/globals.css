@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+/*
+ * Crate — "daylight studio console" (PROMPT.md §9).
+ *
+ * The brief is specific and the anti-pattern list is long, so the constraints are
+ * encoded here rather than left to per-component judgement:
+ *   - cool neutrals with a faint green cast, like anodized panel metal
+ *   - amber ONLY for things currently happening; an idle screen has almost none
+ *   - all data in mono with tabular numerals
+ *   - 1px hairlines and background tint for separation, never drop shadows
+ *   - radius 4px maximum
+ */
+
+@theme {
+  --color-panel-bg: #f1f3f1;
+  --color-surface: #ffffff;
+  --color-recess: #e6e9e5;
+  --color-hairline: #d2d7d1;
+  --color-ink: #14181a;
+  --color-ink-muted: #5e6862;
+  --color-accent: #e0a100;
+  --color-ok: #1f7a5c;
+  --color-warn: #8a6d00;
+  --color-error: #b3341f;
+
+  --font-display: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  --radius-panel: 4px;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--color-panel-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Data reads like readouts: mono, tabular, aligned. */
+.data {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Silkscreen-on-a-panel labels. */
+.label {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-ink-muted);
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-panel);
+}
+
+.recess {
+  background: var(--color-recess);
+}
+
+/* Visible keyboard focus everywhere — §9 requires every screen usable without a mouse. */
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 1px;
+}
+
+/* Motion: 120–180ms ease-out on state change only. */
+@media (prefers-reduced-motion: no-preference) {
+  .transition-state {
+    transition:
+      background-color 140ms ease-out,
+      border-color 140ms ease-out,
+      color 140ms ease-out,
+      opacity 140ms ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dense tables: 36–40px rows, sticky headers, mono columns aligned right. */
+table.dense {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+table.dense thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-recess);
+  border-bottom: 1px solid var(--color-hairline);
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  white-space: nowrap;
+}
+
+table.dense tbody td {
+  height: 38px;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--color-hairline);
+  vertical-align: middle;
+}
+
+table.dense tbody tr:hover {
+  background: var(--color-panel-bg);
+}
+
+table.dense .num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

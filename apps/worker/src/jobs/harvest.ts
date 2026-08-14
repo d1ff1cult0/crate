@@ -24,7 +24,7 @@ import {
 } from '@crate/integrations'
 import { decryptJson, encryptJson } from '../lib/crypto.js'
 import type { JobRunContext } from '../lib/jobrun.js'
-import { enqueue } from '../lib/queues.js'
+import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings } from '../lib/settings.js'
 
 const CHECKPOINT_KEY = 'spotify:harvest:checkpoint'
@@ -254,7 +254,7 @@ export function createHarvestPort(ctx: JobRunContext): HarvestPort {
           'spotify-isrc-backfill',
           'backfill-isrc',
           { spotifyId: id },
-          { jobId: `isrc:${id}`, priority: 10 },
+          { jobId: jobId("isrc", id), priority: 10 },
         )
       }
       await ctx.log('info', `Queued ${externalIds.length} ISRC backfill requests`)
@@ -335,7 +335,7 @@ export async function runHarvest(
       'spotify-sync',
       'harvest',
       { resume: true },
-      { jobId: `harvest-resume:${Date.now()}`, delay: 60 * 60 * 1000 },
+      { jobId: jobId("harvest-resume", Date.now()), delay: 60 * 60 * 1000 },
     )
   }
 

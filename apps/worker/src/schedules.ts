@@ -6,7 +6,7 @@
  * is idempotent rather than duplicating.
  */
 
-import { getQueue, type QueueName } from './lib/queues.js'
+import { getQueue, jobId, type QueueName } from './lib/queues.js'
 
 interface Schedule {
   queue: QueueName
@@ -73,7 +73,7 @@ export async function registerSchedules(): Promise<void> {
   for (const s of SCHEDULES) {
     await getQueue(s.queue).add(s.name, s.data ?? {}, {
       repeat: { pattern: s.cron },
-      jobId: `schedule:${s.name}`,
+      jobId: jobId("schedule", s.name),
     })
   }
 }
