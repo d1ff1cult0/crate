@@ -19,6 +19,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [crate-net]
 
   redis:
     image: redis:7-alpine
@@ -31,6 +32,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [crate-net]
 
   web:
     build:
@@ -46,6 +48,9 @@ services:
       CRATE_ENCRYPTION_KEY: ${CRATE_ENCRYPTION_KEY:?32-byte base64 key; losing it means re-entering every credential}
       CRATE_SESSION_SECRET: ${CRATE_SESSION_SECRET:?set CRATE_SESSION_SECRET in .env}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-}
+      ACOUSTID_API_KEY: ${ACOUSTID_API_KEY:-}
       NODE_ENV: production
     ports:
       - "${WEB_PORT:-3000}:3000"
@@ -53,6 +58,7 @@ services:
       - ${MUSIC_ROOT:-./data/music}:/music
       - ${STAGING_ROOT:-./data/staging}:/staging
       - ${TRASH_ROOT:-./data/trash}:/trash
+    networks: [crate-net, navidrome_default]
 
   worker:
     build:
@@ -74,6 +80,7 @@ services:
       - ${MUSIC_ROOT:-./data/music}:/music
       - ${STAGING_ROOT:-./data/staging}:/staging
       - ${TRASH_ROOT:-./data/trash}:/trash
+    networks: [crate-net, navidrome_default]
 
   # Any provider that must be VPN-routed runs under gluetun and therefore has NO
   # ports of its own — it publishes through gluetun. Reach it at gluetun's published
@@ -83,3 +90,9 @@ services:
   #   image: slskd/slskd
   #   network_mode: service:gluetun
   #   depends_on: [gluetun]
+
+networks:
+  crate-net:
+    driver: bridge
+  navidrome_default:
+    external: true
