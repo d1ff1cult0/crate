@@ -293,7 +293,7 @@ export class YtmProvider implements DownloadProvider {
           ...JS_RUNTIME_ARGS,
           '--dump-json',
           '--playlist-items',
-          '1:5',
+          '1',
           '--no-warnings',
           '--quiet',
           '--extractor-args',
@@ -314,11 +314,11 @@ export class YtmProvider implements DownloadProvider {
       try {
         entry = JSON.parse(line) as YtDlpEntry
       } catch {
-        continue
+        return null
       }
       const artist = entry.artist?.trim()
       const album = entry.album?.trim()
-      if (!entry.id || !artist || !album) continue
+      if (!entry.id || !artist || !album) return null
 
       candidates.push({
         id: entry.id,
@@ -333,6 +333,7 @@ export class YtmProvider implements DownloadProvider {
           releaseYear: entry.release_year,
         },
       })
+      break
     }
     const ranked = rankCandidates(
       { title: query.title, artists: query.artists, durationMs: query.durationMs ?? null, album: query.album ?? null },

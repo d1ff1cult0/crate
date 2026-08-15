@@ -21,23 +21,32 @@ export async function runYouTubePlaylistImport(
     const ytm = new YtmProvider()
     const confirmedTracks: Array<(typeof resolved.tracks)[number] & { canonicalVideoId: string; album: string; albumArtist: string }> = []
     let unconfirmedEntries = 0
-    for (const track of resolved.tracks) {
+    for (const [index, track] of resolved.tracks.entries()) {
       const canonical = await ytm.confirmCanonical({
         title: track.title,
         artists: track.artists,
         album: track.album,
         durationMs: track.durationMs,
       })
-      if (!canonical?.album.trim()) { unconfirmedEntries++; continue }
-      confirmedTracks.push({
-        ...track,
-        title: canonical.title,
-        artists: canonical.artists,
-        album: canonical.album,
-        albumArtist: canonical.albumArtist,
-        durationMs: canonical.durationMs,
-        year: canonical.year,
-        canonicalVideoId: canonical.videoId,
+      if (!canonical?.album.trim()) {
+        unconfirmedEntries++
+      } else {
+        confirmedTracks.push({
+          ...track,
+          title: canonical.title,
+          artists: canonical.artists,
+          album: canonical.album,
+          albumArtist: canonical.albumArtist,
+          durationMs: canonical.durationMs,
+          year: canonical.year,
+          canonicalVideoId: canonical.videoId,
+        })
+      }
+      const current = index + 1
+      await ctx.setProgress(current, resolved.tracks.length, `Confirmed ${current} of ${resolved.tracks.length} YouTube playlist tracks`)
+      await prisma.importRun.update({
+        where: { id: input.importRunId },
+        data: { tracksFound: confirmedTracks.length, tracksFailed: unconfirmedEntries },
       })
     }
     if (confirmedTracks.length === 0) throw new Error('YouTube returned no album-bearing tracks that could be confirmed in the YouTube Music catalog.')

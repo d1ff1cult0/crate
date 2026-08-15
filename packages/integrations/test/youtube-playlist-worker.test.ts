@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   confirmCanonical: vi.fn(),
+  importRunUpdate: vi.fn(),
   sourceTrackUpsert: vi.fn(),
 }))
 
@@ -28,7 +29,7 @@ vi.mock('../../providers/src/index.ts', () => ({
 }))
 vi.mock('../../db/src/index.ts', () => ({
   prisma: {
-    importRun: { update: vi.fn() },
+    importRun: { update: mocks.importRunUpdate },
     sourceTrack: { findMany: vi.fn().mockResolvedValue([]), upsert: mocks.sourceTrackUpsert },
     sourcePlaylist: { upsert: vi.fn().mockResolvedValue({ id: 'source-playlist-id' }) },
     sourcePlaylistItem: { deleteMany: vi.fn(), createMany: vi.fn() },
@@ -59,12 +60,18 @@ describe('YouTube playlist canonical metadata gate', () => {
   })
 
   it('confirms plain yt-dlp artist and album hints before persisting canonical metadata', async () => {
+    const setProgress = vi.fn()
     await runYouTubePlaylistImport(
-      { log: vi.fn() } as never,
+      { log: vi.fn(), setProgress } as never,
       { importRunId: 'import-run-id', url: 'https://www.youtube.com/playlist?list=playlist-id' },
     )
 
     expect(mocks.confirmCanonical).toHaveBeenCalledOnce()
+    expect(setProgress).toHaveBeenCalledWith(1, 1, 'Confirmed 1 of 1 YouTube playlist tracks')
+    expect(mocks.importRunUpdate).toHaveBeenCalledWith({
+      where: { id: 'import-run-id' },
+      data: { tracksFound: 1, tracksFailed: 0 },
+    })
     expect(mocks.sourceTrackUpsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { source_externalId: { source: 'YOUTUBE', externalId: 'original-playlist-video' } },
       create: expect.objectContaining({

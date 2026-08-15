@@ -24,29 +24,15 @@ describe('YtmProvider catalog confirmation', () => {
         return {
           code: 0,
           stderr: '',
-          stdout: [
-            JSON.stringify({
-              id: 'plain-youtube-result',
-              title: 'Goud',
-              channel: 'Suzan & Freek',
-              duration: 203,
-            }),
-            JSON.stringify({
-              id: 'incomplete-music-result',
-              title: 'Goud',
-              artist: 'Suzan & Freek',
-              duration: 203,
-            }),
-            JSON.stringify({
-              id: 'MWxopWLwKv4',
-              title: 'Goud',
-              artist: 'Suzan & Freek',
-              album: 'Dromen In Kleur',
-              album_artist: 'Suzan & Freek',
-              duration: 203,
-              release_year: 2021,
-            }),
-          ].join('\n'),
+          stdout: JSON.stringify({
+            id: 'MWxopWLwKv4',
+            title: 'Goud',
+            artist: 'Suzan & Freek',
+            album: 'Dromen In Kleur',
+            album_artist: 'Suzan & Freek',
+            duration: 203,
+            release_year: 2021,
+          }),
         }
       },
     })
@@ -60,15 +46,33 @@ describe('YtmProvider catalog confirmation', () => {
       durationMs: 203_000,
       year: 2021,
     })
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toContain('https://music.youtube.com/search?q=Suzan%20%26%20Freek%20Goud')
-    expect(calls[0]).not.toContain('--flat-playlist')
-    expect(calls[0]).toEqual(expect.arrayContaining([
-      '--playlist-items',
-      '1:5',
+    const args = calls.at(0)
+    if (!args) throw new Error('expected catalog search arguments')
+    expect(args).toContain('https://music.youtube.com/search?q=Suzan%20%26%20Freek%20Goud')
+    expect(args).not.toContain('--flat-playlist')
+    const playlistItemsIndex = args.indexOf('--playlist-items')
+    expect(playlistItemsIndex).toBeGreaterThanOrEqual(0)
+    expect(args[playlistItemsIndex + 1]).toBe('1')
+    expect(args).toEqual(expect.arrayContaining([
       '--extractor-args',
       'youtube:player_client=web_music',
     ]))
+  })
+
+  it('returns null when the top candidate is incomplete instead of considering later results', async () => {
+    const provider = new YtmProvider({
+      spacer: async () => undefined,
+      runner: async () => ({
+        code: 0,
+        stderr: '',
+        stdout: [
+          JSON.stringify({ id: 'incomplete-top', title: 'Goud', artist: 'Suzan & Freek' }),
+          JSON.stringify({ id: 'later-complete', title: 'Goud', artist: 'Suzan & Freek', album: 'Dromen In Kleur' }),
+        ].join('\n'),
+      }),
+    })
+
+    await expect(provider.confirmCanonical({ title: 'Goud', artists: ['Suzan & Freek'] })).resolves.toBeNull()
   })
 
   it('rejects a plausible catalog hit when its album is missing', async () => {
