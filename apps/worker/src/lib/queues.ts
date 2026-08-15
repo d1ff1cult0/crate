@@ -14,6 +14,7 @@ import { Redis } from 'ioredis'
 export const QUEUE_NAMES = [
   'spotify-sync',
   'spotify-isrc-backfill',
+  'youtube-import',
   'library-scan',
   'match',
   'download',
@@ -43,6 +44,7 @@ export const QUEUE_DEFAULTS: Record<QueueName, QueueConfig> = {
   'spotify-sync': { concurrency: 1 },
   // Lowest priority work in the system. One worker, hard-limited.
   'spotify-isrc-backfill': { concurrency: 1, limiter: { max: 20, duration: 10_000 } },
+  'youtube-import': { concurrency: 1 },
   'library-scan': { concurrency: 1 },
   match: { concurrency: 2 },
   download: { concurrency: 3 },

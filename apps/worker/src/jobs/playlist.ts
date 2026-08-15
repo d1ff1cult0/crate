@@ -218,7 +218,10 @@ export async function materializePlaylist(
   if (!source) return null
 
   const playlist = source.playlistId
-    ? await prisma.playlist.findUnique({ where: { id: source.playlistId } })
+    ? await prisma.playlist.update({
+        where: { id: source.playlistId },
+        data: { name: source.name, description: `Imported from ${source.source}` },
+      })
     : await prisma.playlist.create({
         data: { name: source.name, kind: 'IMPORTED', description: `Imported from ${source.source}` },
       })

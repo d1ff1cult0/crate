@@ -1,0 +1,15 @@
+ALTER TYPE "Source" ADD VALUE 'YOUTUBE';
+ALTER TYPE "ImportKind" ADD VALUE 'YOUTUBE_PLAYLIST';
+ALTER TYPE "ImportStatus" ADD VALUE 'QUEUED' BEFORE 'RUNNING';
+
+ALTER TABLE "ImportRun"
+  ADD COLUMN "tracksDuplicate" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "tracksAvailable" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "tracksSucceeded" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "tracksFailed" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "sourcePlaylistId" TEXT,
+  ADD COLUMN "jobId" TEXT,
+  ADD COLUMN "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE INDEX "ImportRun_sourcePlaylistId_idx" ON "ImportRun"("sourcePlaylistId");
+CREATE INDEX "ImportRun_jobId_idx" ON "ImportRun"("jobId");

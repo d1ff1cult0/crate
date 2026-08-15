@@ -89,7 +89,7 @@ async function findCandidates(source: {
 
 export async function runMatchSweep(
   ctx: JobRunContext,
-  opts: { all?: boolean; batchSize?: number } = {},
+  opts: { all?: boolean; batchSize?: number; sourceTrackIds?: string[] } = {},
 ): Promise<{ examined: number; matched: number; review: number; missing: number }> {
   const settings = await loadSettings()
   const cfg: MatchDefaults = {
@@ -105,9 +105,9 @@ export async function runMatchSweep(
   // Re-attempt anything unresolved. A MATCHED track is left alone unless a full
   // re-match was asked for — re-deciding a settled match on every scan would churn
   // the review queue and undo manual decisions.
-  const where: Prisma.SourceTrackWhereInput = opts.all
-    ? {}
-    : {
+  const where: Prisma.SourceTrackWhereInput = opts.sourceTrackIds
+    ? { id: { in: opts.sourceTrackIds } }
+    : opts.all ? {} : {
         OR: [
           { match: { is: null } },
           { match: { status: { in: ['MISSING', 'NEEDS_REVIEW'] } } },
@@ -115,7 +115,10 @@ export async function runMatchSweep(
       }
 
   const total = await prisma.sourceTrack.count({ where })
-  await ctx.log('info', `Match sweep over ${total} source tracks`, { all: opts.all ?? false })
+  await ctx.log('info', `Match sweep over ${total} source tracks`, {
+    all: opts.all ?? false,
+    scoped: opts.sourceTrackIds?.length ?? null,
+  })
 
   const batchSize = opts.batchSize ?? 500
   let examined = 0

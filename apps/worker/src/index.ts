@@ -26,11 +26,13 @@ import { runCurate, runGenerateMixes, runReleaseRadar, runTasteRefresh } from '.
 import { runRepairIsrc } from './jobs/repair-isrc.js'
 import { runRestore } from './jobs/restore.js'
 import { runLibraryScan } from './jobs/scan.js'
+import { runYouTubePlaylistImport } from './jobs/youtube-playlist.js'
 import { JobRunContext } from './lib/jobrun.js'
 import { runNavidromeScan } from './lib/navidrome.js'
 import { closeAll, createWorker, type QueueName } from './lib/queues.js'
 import { loadSettings } from './lib/settings.js'
 import { purgeTrash, undoTrashOperation } from './lib/trash.js'
+import { refreshYouTubeImportsForTrack } from './lib/youtube-import-status.js'
 import { registerSchedules } from './schedules.js'
 
 const log = (msg: string, extra?: Record<string, unknown>) => {
@@ -112,11 +114,23 @@ async function main() {
         if (job.name === 'reconcile') {
           return reconcileDownloadQueue(ctx)
         }
-        return runDownload(ctx, {
-          requestId: String(job.data.requestId),
+        const requestId = String(job.data.requestId)
+        const result = await runDownload(ctx, {
+          requestId,
           ...(Array.isArray(job.data.exclude) ? { exclude: job.data.exclude as string[] } : {}),
         })
+        const request = await prisma.downloadRequest.findUnique({ where: { id: requestId }, select: { sourceTrackId: true } })
+        if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
+        return result
       }),
+    ),
+
+    createWorker(
+      'youtube-import',
+      tracked('youtube-import', async (ctx, job) => runYouTubePlaylistImport(ctx, {
+        importRunId: String(job.data.importRunId),
+        url: String(job.data.url),
+      })),
     ),
 
     createWorker(
@@ -133,6 +147,10 @@ async function main() {
         if (result.rejected) {
           await retryAfterRejection(String(job.data.requestId), String(job.data.provider))
         }
+        const request = await prisma.downloadRequest.findUnique({
+          where: { id: String(job.data.requestId) }, select: { sourceTrackId: true },
+        })
+        if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
         return result
       }),
     ),

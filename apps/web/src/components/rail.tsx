@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { href: '/', label: 'Overview' },
   { href: '/setup', label: 'Setup' },
   { href: '/import', label: 'Import' },
+  { href: '/import/youtube', label: 'YouTube playlist' },
   { href: '/playlists', label: 'Playlists', countKey: 'playlists' },
   { href: '/queue', label: 'Queue', countKey: 'queue' },
   { href: '/review', label: 'Review', countKey: 'review' },
@@ -68,7 +69,9 @@ export function Rail() {
 
       <ul className="flex gap-1 overflow-x-auto px-2 pb-2 md:flex-col md:gap-0 md:overflow-visible md:px-2 md:pb-4">
         {NAV.map((item) => {
-          const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href))
+          const active = pathname === item.href || (
+            item.href !== '/' && item.href !== '/import' && pathname.startsWith(`${item.href}/`)
+          )
           const count = item.countKey ? counts[item.countKey] : undefined
           return (
             <li key={item.href}>

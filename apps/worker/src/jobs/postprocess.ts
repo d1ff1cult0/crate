@@ -367,6 +367,10 @@ export async function runPostprocess(
         data: { status: 'SUCCEEDED', resultFileId: collision.id },
       })
       await linkMatch(request.sourceTrackId, collision.trackId, source.isrc)
+      await enqueue('playlist-write', 'write-affected', { sourceTrackId: request.sourceTrackId }, {
+        jobId: jobId('pl-affected', request.sourceTrackId),
+      })
+      await requestNavidromeScan()
       return {
         ok: true,
         supersededByExisting: true,

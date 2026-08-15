@@ -28,7 +28,7 @@ COPY . .
 RUN pnpm --filter @crate/db generate
 
 # Fail fast if the audio tooling is missing rather than at first job.
-RUN ffprobe -version >/dev/null && fpcalc -version >/dev/null
+RUN ffprobe -version >/dev/null && fpcalc -version >/dev/null && yt-dlp --version >/dev/null
 
 # Apply migrations before the worker starts, and ONLY here — the web container must not
 # also run them, or two containers race for the migration lock on every deploy.

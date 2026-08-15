@@ -19,6 +19,7 @@ import { Redis } from 'ioredis'
 export type QueueName =
   | 'spotify-sync'
   | 'spotify-isrc-backfill'
+  | 'youtube-import'
   | 'library-scan'
   | 'match'
   | 'download'

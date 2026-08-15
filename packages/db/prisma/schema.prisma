@@ -29,6 +29,7 @@ datasource db {
 
 enum Source {
   SPOTIFY
+  YOUTUBE
   CSV
   TEXT
   GDPR_EXPORT
@@ -87,6 +88,7 @@ enum JobStatus {
 
 enum ImportKind {
   SPOTIFY_PLAYLIST
+  YOUTUBE_PLAYLIST
   SPOTIFY_HARVEST
   GDPR_EXPORT
   CSV
@@ -94,6 +96,7 @@ enum ImportKind {
 }
 
 enum ImportStatus {
+  QUEUED
   RUNNING
   SUCCEEDED
   PARTIAL
@@ -485,11 +488,20 @@ model ImportRun {
   imageUrl    String?
   tracksFound Int          @default(0)
   tracksNew   Int          @default(0)
+  tracksDuplicate Int      @default(0)
+  tracksAvailable Int      @default(0)
+  tracksSucceeded Int      @default(0)
+  tracksFailed Int         @default(0)
+  sourcePlaylistId String?
+  jobId       String?
   message     String?
   detailJson  Json?
   createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   @@index([createdAt])
+  @@index([sourcePlaylistId])
+  @@index([jobId])
 }
 
 /// External service connections. Secrets are AES-256-GCM ciphertext (see A4) and
