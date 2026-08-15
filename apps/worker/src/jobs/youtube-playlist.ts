@@ -22,18 +22,10 @@ export async function runYouTubePlaylistImport(
     const confirmedTracks: Array<(typeof resolved.tracks)[number] & { canonicalVideoId: string; album: string; albumArtist: string }> = []
     let unconfirmedEntries = 0
     for (const track of resolved.tracks) {
-      if (track.metadataSource === 'structured' && track.album?.trim()) {
-        confirmedTracks.push({
-          ...track,
-          canonicalVideoId: track.videoId,
-          album: track.album,
-          albumArtist: track.albumArtist?.trim() || track.artists[0]!,
-        })
-        continue
-      }
       const canonical = await ytm.confirmCanonical({
         title: track.title,
         artists: track.artists,
+        album: track.album,
         durationMs: track.durationMs,
       })
       if (!canonical?.album.trim()) { unconfirmedEntries++; continue }
@@ -43,8 +35,8 @@ export async function runYouTubePlaylistImport(
         artists: canonical.artists,
         album: canonical.album,
         albumArtist: canonical.albumArtist,
-        durationMs: canonical.durationMs ?? track.durationMs,
-        year: canonical.year ?? track.year,
+        durationMs: canonical.durationMs,
+        year: canonical.year,
         canonicalVideoId: canonical.videoId,
       })
     }
