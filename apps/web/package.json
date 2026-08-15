@@ -6,14 +6,17 @@
     "dev": "next dev -p ${PORT:-3000}",
     "build": "next build",
     "start": "next start -p ${PORT:-3000}",
+    "bootstrap-owner": "tsx scripts/bootstrap-owner.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@better-auth/prisma-adapter": "1.6.29",
     "@crate/core": "workspace:*",
     "@crate/db": "workspace:*",
     "@crate/integrations": "workspace:*",
+    "better-auth": "1.6.29",
     "bullmq": "^5.34.9",
     "ioredis": "^5.4.2",
     "next": "^15.1.6",
@@ -29,6 +32,7 @@
     "@types/react-dom": "^19.0.3",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
+    "tsx": "^4.23.12",
     "vitest": "^3.0.2"
   }
 }

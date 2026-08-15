@@ -12,10 +12,12 @@ import Link from 'next/link'
 import { SegmentedMeter } from '../../components/meter'
 import { Badge, EmptyState, Panel } from '../../components/ui'
 import { PlaylistActions } from '../../components/playlist-actions'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
 export default async function PlaylistsPage() {
+  await requireSession('/playlists')
   const sourcePlaylists = await prisma.sourcePlaylist.findMany({
     orderBy: [{ isOwned: 'desc' }, { name: 'asc' }],
     include: {

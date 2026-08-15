@@ -13,6 +13,7 @@ import { prisma } from '@crate/db'
 import { Pager } from '../../components/pagination'
 import { ReviewQueue } from '../../components/review-queue'
 import { EmptyState, Panel } from '../../components/ui'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,7 @@ export default async function ReviewPage({
 }: {
   searchParams: Promise<{ page?: string; pageSize?: string }>
 }) {
+  await requireSession('/review')
   const params = await searchParams
   const request = parsePageRequest(params)
 

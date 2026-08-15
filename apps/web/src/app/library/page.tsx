@@ -3,6 +3,7 @@
 import { prisma } from '@crate/db'
 import { Badge, EmptyState, Panel } from '../../components/ui'
 import { SegmentedMeter } from '../../components/meter'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,6 +18,7 @@ export default async function LibraryPage({
 }: {
   searchParams: Promise<{ q?: string }>
 }) {
+  await requireSession('/library')
   const { q } = await searchParams
   const query = q?.trim() ?? ''
 

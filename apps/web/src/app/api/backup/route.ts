@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { prisma } from '@crate/db'
 import { BACKUP_FORMAT } from '../../../lib/jobs'
 import { enqueueJob, jobId } from '../../../lib/queue'
+import { isUnauthorized, requireApiSession } from '../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -35,6 +36,8 @@ function replacer(_key: string, value: unknown): unknown {
 }
 
 export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const essentialOnly = new URL(request.url).searchParams.get('scope') === 'essential'
 
   const [
@@ -128,6 +131,8 @@ export async function GET(request: Request) {
  * large library is tens of megabytes, and a job payload that size is abuse of a queue.
  */
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const form = await request.formData().catch(() => null)
   const file = form?.get('backup')
   const confirm = form?.get('confirm')

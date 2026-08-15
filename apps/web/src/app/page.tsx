@@ -13,6 +13,7 @@ import Link from 'next/link'
 import { JobButton } from '../components/job-button'
 import { MeterRow } from '../components/meter'
 import { Badge, Button, EmptyState, Panel, Readout, StatusDot } from '../components/ui'
+import { requireSession } from '../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -95,6 +96,7 @@ async function getOverview() {
 }
 
 export default async function OverviewPage() {
+  await requireSession('/')
   const d = await getOverview()
   const c = d.coverage
   const isrcCoverage = d.sourceTracks === 0 ? 0 : d.withIsrc / d.sourceTracks

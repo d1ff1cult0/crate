@@ -10,10 +10,12 @@
 import { prisma } from '@crate/db'
 import { ImportBox } from '../../components/import-box'
 import { Badge, EmptyState, Panel } from '../../components/ui'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
 export default async function ImportPage() {
+  await requireSession('/import')
   const runs = await prisma.importRun.findMany({ orderBy: { createdAt: 'desc' }, take: 25 })
 
   return (

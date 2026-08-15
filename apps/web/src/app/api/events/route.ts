@@ -10,6 +10,7 @@
  */
 
 import { Redis } from 'ioredis'
+import { isUnauthorized, requireApiSession } from '../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -17,6 +18,8 @@ export const runtime = 'nodejs'
 const PROGRESS_CHANNEL = 'crate:progress'
 
 export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const encoder = new TextEncoder()
 
   const stream = new ReadableStream({

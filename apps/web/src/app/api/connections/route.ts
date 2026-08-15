@@ -13,6 +13,7 @@ import { prisma } from '@crate/db'
 import { ListenbrainzClient, SubsonicClient } from '@crate/integrations'
 import { z } from 'zod'
 import { encryptJson } from '../../../lib/crypto'
+import { isUnauthorized, requireApiSession } from '../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -61,7 +62,9 @@ const BodySchema = z.discriminatedUnion('provider', [
 ])
 
 /** Credentials are never returned — only whether each provider is configured. */
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const connections = await prisma.connection.findMany({
     select: {
       provider: true,
@@ -86,6 +89,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const parsed = BodySchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) {
     return Response.json(
@@ -162,6 +167,8 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const provider = new URL(request.url).searchParams.get('provider')
   if (!provider) return Response.json({ error: 'No provider given' }, { status: 400 })
 

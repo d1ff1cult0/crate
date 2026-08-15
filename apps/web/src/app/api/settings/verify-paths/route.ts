@@ -12,12 +12,15 @@ import { prisma } from '@crate/db'
 import { SubsonicClient, verifyPaths } from '@crate/integrations'
 import { decryptSecret } from '../../../../lib/crypto'
 import { PATHS_VERIFIED_KEY } from '../../../../lib/setup-state'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const maxDuration = 180
 
-export async function POST() {
+export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const [settingRow, connection, sampleFile] = await Promise.all([
     prisma.setting.findUnique({ where: { key: 'app' } }),
     prisma.connection.findUnique({ where: { provider: 'navidrome' } }),

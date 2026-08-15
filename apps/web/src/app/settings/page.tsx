@@ -13,6 +13,7 @@ import { Connections } from '../../components/connections'
 import { PathSettings } from '../../components/path-settings'
 import { HarvestPanel } from '../../components/harvest-panel'
 import { Panel } from '../../components/ui'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,7 @@ export default async function SettingsPage({
 }: {
   searchParams: Promise<{ spotify?: string; as?: string; reason?: string }>
 }) {
+  await requireSession('/settings')
   const params = await searchParams
   const settingRow = await prisma.setting.findUnique({ where: { key: 'app' } })
   const settings = (settingRow?.value ?? {}) as Record<string, unknown>

@@ -14,6 +14,7 @@ import { JobButton } from '../../components/job-button'
 import { Pager } from '../../components/pagination'
 import { EmptyState, Panel, Readout } from '../../components/ui'
 import { BULK_DELETE_MIN_CONFIDENCE } from '../../lib/jobs'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +34,7 @@ export default async function DuplicatesPage({
 }: {
   searchParams: Promise<{ page?: string; pageSize?: string }>
 }) {
+  await requireSession('/duplicates')
   const params = await searchParams
   const request = parsePageRequest(params)
 

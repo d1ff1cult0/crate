@@ -8,6 +8,7 @@
 import { prisma } from '@crate/db'
 import { z } from 'zod'
 import { ensureDownloadJobs, enqueueJob, jobId } from '../../../../lib/queue'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -18,6 +19,8 @@ const BodySchema = z.object({
 })
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const parsed = BodySchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) return Response.json({ error: 'Bad request' }, { status: 400 })
 

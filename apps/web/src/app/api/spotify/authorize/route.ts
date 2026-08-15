@@ -18,11 +18,14 @@ import {
   oauthCookieOptions,
   spotifyRedirectUri,
 } from '../../../../lib/oauth'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const row = await prisma.setting.findUnique({ where: { key: 'app' } })
   const settings = (row?.value ?? {}) as { spotifyClientId?: string }
   // Settings wins, so the client ID can be changed from the UI without a redeploy;

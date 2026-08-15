@@ -10,6 +10,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import { authClient } from '../lib/auth-client'
 
 interface NavItem {
   href: string
@@ -32,7 +33,7 @@ const NAV: NavItem[] = [
   { href: '/settings', label: 'Settings' },
 ]
 
-export function Rail() {
+export function Rail({ account }: { account: string }) {
   const pathname = usePathname()
   const [counts, setCounts] = useState<Record<string, number>>({})
 
@@ -93,6 +94,13 @@ export function Rail() {
           )
         })}
       </ul>
+      <div className="hidden border-t border-hairline px-5 py-4 md:block">
+        <div className="truncate data text-[10px] text-ink-muted" title={account}>{account}</div>
+        <button type="button" className="mt-2 font-display text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted hover:text-ink"
+          onClick={async () => { await authClient.signOut(); window.location.assign('/auth/sign-in') }}>
+          Sign out
+        </button>
+      </div>
     </nav>
   )
 }

@@ -19,6 +19,7 @@ import { stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { prisma } from '@crate/db'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -41,6 +42,8 @@ function isUnder(child: string, parent: string): boolean {
 }
 
 export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const fileId = new URL(request.url).searchParams.get('fileId')
   if (!fileId) return new Response('Missing fileId', { status: 400 })
 

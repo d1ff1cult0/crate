@@ -22,6 +22,7 @@ import { JobButton } from '../../components/job-button'
 import { SegmentedMeter } from '../../components/meter'
 import { Badge, Button, Panel } from '../../components/ui'
 import { PATHS_VERIFIED_KEY, pathVerificationState } from '../../lib/setup-state'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -39,6 +40,7 @@ interface Step {
 const PREMIUM_LAPSE = new Date('2026-09-01T00:00:00Z')
 
 export default async function SetupPage() {
+  await requireSession('/setup')
   const [
     spotify,
     navidrome,

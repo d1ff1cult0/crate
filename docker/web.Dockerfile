@@ -15,7 +15,9 @@ RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY . .
 RUN pnpm --filter @crate/db generate
-RUN pnpm --filter @crate/web build
+# Better Auth is initialized while Next.js builds static routes. This non-production
+# placeholder is scoped to this RUN instruction and is not persisted in the image.
+RUN CRATE_SESSION_SECRET=crate-build-only-placeholder-not-for-runtime pnpm --filter @crate/web build
 
 EXPOSE 3000
 CMD ["pnpm", "--filter", "@crate/web", "start"]

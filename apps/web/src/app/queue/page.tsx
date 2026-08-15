@@ -18,6 +18,7 @@ import { JobButton } from '../../components/job-button'
 import { SegmentedMeter } from '../../components/meter'
 import { Pager } from '../../components/pagination'
 import { Badge, EmptyState, Panel, Readout } from '../../components/ui'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,6 +46,7 @@ export default async function QueuePage({
 }: {
   searchParams: Promise<{ page?: string; pageSize?: string; status?: string }>
 }) {
+  await requireSession('/queue')
   const params = await searchParams
   const request = parsePageRequest(params)
   const statusFilter = params.status

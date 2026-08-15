@@ -15,6 +15,7 @@ import { CuratorBox } from '../../components/curator-box'
 import { JobButton } from '../../components/job-button'
 import { SegmentedMeter } from '../../components/meter'
 import { Badge, EmptyState, Panel, Readout } from '../../components/ui'
+import { requireSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,6 +28,7 @@ interface MixSeed {
 }
 
 export default async function MixesPage() {
+  await requireSession('/mixes')
   const [mixes, scoredTracks, edgeCount, releases, setting, curated] = await Promise.all([
     prisma.mix.findMany({
       orderBy: { slot: 'asc' },

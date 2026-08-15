@@ -521,11 +521,78 @@ model Connection {
   updatedAt    DateTime  @updatedAt
 }
 
+// Legacy placeholder retained so the authentication migration is non-destructive. It
+// was never wired to the app boundary and is not consulted by Better Auth.
 model AppUser {
   id           String   @id @default(cuid())
   username     String   @unique
   passwordHash String
   createdAt    DateTime @default(now())
+}
+
+// Better Auth's core schema. `ownerKey` is deliberately constant: the unique index is
+// the database-level race gate that makes two simultaneous CLI bootstrap attempts unable
+// to create two owners, even if both requests observed an empty table.
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  ownerKey      String    @default("crate-owner") @unique
+  sessions      Session[]
+  accounts      Account[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                 String
+  accessToken            String?
+  refreshToken           String?
+  idToken                String?
+  accessTokenExpiresAt   DateTime?
+  refreshTokenExpiresAt  DateTime?
+  scope                  String?
+  password               String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
 }
 
 model Setting {

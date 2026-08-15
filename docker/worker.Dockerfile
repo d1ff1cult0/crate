@@ -37,11 +37,4 @@ RUN pnpm --filter @crate/db generate
 RUN ffprobe -version >/dev/null && fpcalc -version >/dev/null \
     && test "$(yt-dlp --version)" = "${YT_DLP_VERSION}"
 
-# Apply migrations before the worker starts, and ONLY here — the web container must not
-# also run them, or two containers race for the migration lock on every deploy.
-#
-# `migrate deploy` is the non-interactive path: it applies pending migrations and never
-# resets or prompts. It is idempotent, so a restart with nothing pending is a no-op.
-# Without this a shipped migration only lands if someone remembers to run it by hand,
-# and the failure that follows looks like an application bug rather than a missed step.
-CMD ["sh", "-c", "cd packages/db && npx prisma migrate deploy && cd /app && pnpm --filter @crate/worker start"]
+CMD ["pnpm", "--filter", "@crate/worker", "start"]

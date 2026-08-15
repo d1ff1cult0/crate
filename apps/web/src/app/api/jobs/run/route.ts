@@ -9,6 +9,7 @@
 import { z } from 'zod'
 import { RUNNABLE } from '../../../../lib/jobs'
 import { enqueueJob, jobId } from '../../../../lib/queue'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -16,6 +17,8 @@ export const runtime = 'nodejs'
 const BodySchema = z.object({ job: z.string().min(1) })
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const parsed = BodySchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) return Response.json({ error: 'Bad request' }, { status: 400 })
 
@@ -32,7 +35,9 @@ export async function POST(request: Request) {
   return Response.json({ ok: true, description: job.description })
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   return Response.json(
     Object.entries(RUNNABLE).map(([key, job]) => ({
       key,

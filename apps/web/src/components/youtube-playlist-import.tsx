@@ -31,15 +31,11 @@ export function YouTubePlaylistImport({ initialRuns }: { initialRuns: ImportRun[
   const [runs, setRuns] = useState(initialRuns)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [token, setToken] = useState('')
-
-  useEffect(() => { setToken(sessionStorage.getItem('crate-youtube-import-token') ?? '') }, [])
 
   const refresh = useCallback(async () => {
-    if (!token) return
-    const response = await fetch('/api/import/youtube', { cache: 'no-store', headers: { 'x-crate-youtube-import-token': token } })
+    const response = await fetch('/api/import/youtube', { cache: 'no-store' })
     if (response.ok) setRuns(await response.json() as ImportRun[])
-  }, [token])
+  }, [])
 
   useEffect(() => {
     if (!runs.some((run) => run.status === 'QUEUED' || run.status === 'RUNNING')) return
@@ -53,7 +49,7 @@ export function YouTubePlaylistImport({ initialRuns }: { initialRuns: ImportRun[
     setError(null)
     try {
       const response = await fetch('/api/import/youtube', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-crate-youtube-import-token': token }, body: JSON.stringify({ url }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
       })
       const result = await response.json() as { error?: string }
       if (!response.ok) throw new Error(result.error ?? 'Could not queue the playlist.')
@@ -70,11 +66,6 @@ export function YouTubePlaylistImport({ initialRuns }: { initialRuns: ImportRun[
     <Panel title="YouTube playlist URL">
       <form onSubmit={submit} className="space-y-3">
         <label className="block space-y-1.5">
-          <span className="label">Operator token</span>
-          <input type="password" required value={token} onChange={(event) => { setToken(event.target.value); sessionStorage.setItem('crate-youtube-import-token', event.target.value) }} autoComplete="off" className="data w-full rounded-[4px] border border-hairline bg-surface px-3 py-2 text-sm text-ink" />
-          <span className="text-xs text-ink-muted">Disabled until the server-only CRATE_YOUTUBE_IMPORT_TOKEN is configured. This value stays in this browser tab/session and is never embedded by the UI.</span>
-        </label>
-        <label className="block space-y-1.5">
           <span className="label">Playlist address</span>
           <input
             type="url" required value={url} onChange={(event) => setUrl(event.target.value)}
@@ -86,7 +77,7 @@ export function YouTubePlaylistImport({ initialRuns }: { initialRuns: ImportRun[
           <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
             Crate keeps the first occurrence of a repeated video, reuses recordings already in your library, and preserves unavailable entries as visible gaps. Rerunning the same URL updates the same Crate playlist.
           </p>
-          <Button variant="primary" disabled={submitting || !url.trim() || !token}>
+          <Button variant="primary" disabled={submitting || !url.trim()}>
             {submitting ? 'Queueing…' : 'Import playlist'}
           </Button>
         </div>

@@ -4,6 +4,12 @@
 # mounts the same library somewhere else. Set pathMappings in Settings and run the
 # "Verify paths" diagnostic — do not assume the two match. (PROMPT.md §5)
 
+x-web-image: &web-image
+  image: crate-web
+  build:
+    context: .
+    dockerfile: docker/web.Dockerfile
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -34,18 +40,26 @@ services:
       retries: 5
     networks: [crate-net]
 
+  migrate:
+    <<: *web-image
+    command: ["pnpm", "db:deploy"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
+    networks: [crate-net]
+
   web:
-    build:
-      context: .
-      dockerfile: docker/web.Dockerfile
+    <<: *web-image
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     environment:
       DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
       REDIS_URL: redis://redis:6379
-      CRATE_YOUTUBE_IMPORT_TOKEN: ${CRATE_YOUTUBE_IMPORT_TOKEN:-}
       CRATE_ENCRYPTION_KEY: ${CRATE_ENCRYPTION_KEY:?32-byte base64 key; losing it means re-entering every credential}
       CRATE_SESSION_SECRET: ${CRATE_SESSION_SECRET:?set CRATE_SESSION_SECRET in .env}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
@@ -71,6 +85,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     environment:
       DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
       REDIS_URL: redis://redis:6379

@@ -1,17 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { authorizeYouTubeImport, youtubeImportRateLimitKey, validateMutationOrigin } from '../src/lib/youtube-import-security'
+import { youtubeImportRateLimitKey, validateMutationOrigin } from '../src/lib/youtube-import-security'
 
 describe('YouTube import route security', () => {
-  it('is disabled without a configured server token', () => {
-    expect(authorizeYouTubeImport(undefined, 'anything')).toBe('disabled')
-  })
-
-  it('requires the exact token without leaking comparison detail', () => {
-    expect(authorizeYouTubeImport('secret', undefined)).toBe('unauthorized')
-    expect(authorizeYouTubeImport('secret', 'wrong')).toBe('unauthorized')
-    expect(authorizeYouTubeImport('secret', 'secret')).toBe('authorized')
-  })
-
   it('requires mutation Origin to match the request origin', () => {
     expect(validateMutationOrigin('https://crate.example', 'https://crate.example/api/import/youtube')).toBe(true)
     expect(validateMutationOrigin('https://evil.example', 'https://crate.example/api/import/youtube')).toBe(false)

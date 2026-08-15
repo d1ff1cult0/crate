@@ -1,5 +1,6 @@
 import { prisma } from '@crate/db'
 import { z } from 'zod'
+import { isUnauthorized, requireApiSession } from '../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,12 +25,16 @@ const PatchSchema = z
   })
   .strict()
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const row = await prisma.setting.findUnique({ where: { key: 'app' } })
   return Response.json(row?.value ?? {})
 }
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const parsed = PatchSchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) {
     return Response.json({ error: parsed.error.issues[0]?.message ?? 'Bad request' }, { status: 400 })

@@ -10,12 +10,15 @@
 import { parseSpotifyRef, parseTrackLines } from '@crate/core'
 import { prisma } from '@crate/db'
 import { z } from 'zod'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 
 const BodySchema = z.object({ input: z.string().min(1) })
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const body = BodySchema.safeParse(await request.json().catch(() => null))
   if (!body.success) {
     return Response.json({ kind: 'error', message: 'Nothing to import.' }, { status: 400 })

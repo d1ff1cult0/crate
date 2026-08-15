@@ -1,14 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
-
-export type ImportAuthorization = 'disabled' | 'unauthorized' | 'authorized'
-
-export function authorizeYouTubeImport(configured: string | undefined, presented: string | undefined): ImportAuthorization {
-  if (!configured) return 'disabled'
-  if (!presented) return 'unauthorized'
-  const expected = Buffer.from(configured)
-  const actual = Buffer.from(presented)
-  return expected.length === actual.length && timingSafeEqual(expected, actual) ? 'authorized' : 'unauthorized'
-}
+import { createHash } from 'node:crypto'
 
 export function validateMutationOrigin(origin: string | null, requestUrl: string): boolean {
   if (!origin) return false

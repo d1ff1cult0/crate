@@ -18,6 +18,7 @@ import { prisma } from '@crate/db'
 import { z } from 'zod'
 import { BULK_DELETE_MIN_CONFIDENCE } from '../../../../lib/jobs'
 import { enqueueJob, jobId } from '../../../../lib/queue'
+import { isUnauthorized, requireApiSession } from '../../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -49,6 +50,8 @@ const BodySchema = z.discriminatedUnion('action', [
 ])
 
 export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const parsed = BodySchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) return Response.json({ error: 'Bad request' }, { status: 400 })
   const body = parsed.data

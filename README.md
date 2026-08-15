@@ -56,10 +56,30 @@ STAGING_ROOT=./data/staging
 TRASH_ROOT=./data/trash
 ```
 
-Then:
+Deploy normally with:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
+```
+
+Compose automatically runs all checked-in production migrations after Postgres is
+healthy and before either the web or worker service starts.
+
+After deployment, create the sole owner from an interactive terminal on the server:
+
+```bash
+docker compose exec -it web pnpm --filter @crate/web bootstrap-owner
+```
+
+Run this command only in a terminal on the deployment server; do not expose it through a
+remote endpoint or browser. It prompts locally for email, display name, and a non-echoed
+password. It works only while the user table is empty and creates no session or default
+credentials. There is no browser registration route or setup token; use `/auth/sign-in`
+afterward.
+
+To follow worker activity afterward:
+
+```bash
 docker compose logs -f worker
 ```
 

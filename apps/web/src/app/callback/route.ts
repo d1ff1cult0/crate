@@ -7,10 +7,13 @@
  */
 
 import { handleSpotifyCallback } from '../../lib/spotify-callback'
+import { isUnauthorized, requireApiSession } from '../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   return handleSpotifyCallback(request)
 }

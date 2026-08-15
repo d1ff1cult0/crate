@@ -8,17 +8,22 @@
 import { prisma } from '@crate/db'
 import { Queue } from 'bullmq'
 import { Redis } from 'ioredis'
+import { isUnauthorized, requireApiSession } from '../../../lib/session'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const row = await prisma.setting.findUnique({ where: { key: 'spotify:harvest:summary' } })
   if (!row) return new Response(null, { status: 204 })
   return Response.json(row.value)
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const session = await requireApiSession(request)
+  if (isUnauthorized(session)) return session
   const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
     maxRetriesPerRequest: null,
   })
