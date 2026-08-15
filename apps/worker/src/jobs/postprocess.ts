@@ -45,6 +45,7 @@ import { requestNavidromeScan } from '../lib/navidrome.js'
 import { enqueue, jobId } from '../lib/queues.js'
 import { loadSettings } from '../lib/settings.js'
 import { moveToTrash, trashDestination } from '../lib/trash.js'
+import { canonicalYouTubeEligibility } from '../lib/canonical-youtube.js'
 import { readFileMetadata, registerFile } from './scan.js'
 
 export interface PostprocessInput {
@@ -143,6 +144,28 @@ export async function runPostprocess(
   }
 
   const source = request.sourceTrack
+  const eligibility = canonicalYouTubeEligibility(source)
+  if (!eligibility.eligible) {
+    const discardError = await unlink(input.stagedPath).then(
+      () => null,
+      (error: unknown) => error,
+    )
+    await prisma.downloadRequest.update({
+      where: { id: request.id },
+      data: { status: 'MANUAL_HOLD', lastError: eligibility.error },
+    })
+    await ctx.log('error', 'Post-processing placed on manual hold: canonical YouTube metadata invariant failed', {
+      requestId: request.id,
+      sourceTrackId: request.sourceTrackId,
+      stagedPath: input.stagedPath,
+      reason: eligibility.error,
+      stagedInputDiscarded: discardError === null,
+      ...(discardError ? { discardError: String(discardError) } : {}),
+      action: 'Verification, tagging, placement, and library registration were not started.',
+    })
+    return { ok: false, reason: eligibility.error }
+  }
+
   const label = `${source.artists.join(', ')} - ${source.title}`
   await ctx.log('info', `Post-processing ${label}`, {
     provider: input.provider,

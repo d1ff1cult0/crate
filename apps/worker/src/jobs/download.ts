@@ -30,6 +30,7 @@ import {
   type DownloadProvider,
   type TrackQuery,
 } from '@crate/providers'
+import { canonicalYouTubeEligibility } from '../lib/canonical-youtube.js'
 import { reconcileDownloadQueue, requestDownload } from '../lib/download-queue.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { enqueue, jobId } from '../lib/queues.js'
@@ -89,8 +90,6 @@ export async function runDownload(
   ctx: JobRunContext,
   input: DownloadJobInput,
 ): Promise<DownloadResult> {
-  const settings = await loadSettings()
-
   const request = await prisma.downloadRequest.findUnique({
     where: { id: input.requestId },
     include: { sourceTrack: true },
@@ -106,6 +105,23 @@ export async function runDownload(
     await ctx.log('info', 'On manual hold — not attempting')
     return { status: 'SKIPPED', detail: 'manual hold' }
   }
+
+  const eligibility = canonicalYouTubeEligibility(request.sourceTrack)
+  if (!eligibility.eligible) {
+    await prisma.downloadRequest.update({
+      where: { id: request.id },
+      data: { status: 'MANUAL_HOLD', lastError: eligibility.error },
+    })
+    await ctx.log('error', 'Download placed on manual hold: canonical YouTube metadata invariant failed', {
+      requestId: request.id,
+      sourceTrackId: request.sourceTrackId,
+      reason: eligibility.error,
+      action: 'Provider and staging work were not started. Repair canonical metadata before releasing this request.',
+    })
+    return { status: 'SKIPPED', detail: eligibility.error! }
+  }
+
+  const settings = await loadSettings()
   if (!settings.downloadEnabled) {
     await ctx.log('info', 'Downloading is switched off in settings')
     return { status: 'SKIPPED', detail: 'downloads disabled' }

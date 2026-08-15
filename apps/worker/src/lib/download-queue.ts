@@ -19,6 +19,7 @@ import {
 } from '@crate/core'
 import { prisma } from '@crate/db'
 import type { JobRunContext } from './jobrun.js'
+import { canonicalYouTubeEligibility } from './canonical-youtube.js'
 import { getQueue } from './queues.js'
 
 /**
@@ -171,6 +172,12 @@ export async function requestDownload(
   sourceTrackId: string,
   opts: { priority?: number; retryAbandoned?: boolean } = {},
 ): Promise<{ requestId: string; created: boolean; enqueued: boolean }> {
+  const sourceTrack = await prisma.sourceTrack.findUnique({ where: { id: sourceTrackId } })
+  if (!sourceTrack) throw new Error(`Source track ${sourceTrackId} no longer exists`)
+
+  const eligibility = canonicalYouTubeEligibility(sourceTrack)
+  if (!eligibility.eligible) throw new Error(eligibility.error)
+
   const existing = await prisma.downloadRequest.findUnique({
     where: { sourceTrackId },
   })
