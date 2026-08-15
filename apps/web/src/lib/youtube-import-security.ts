@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
+import { isTrustedMutationOrigin } from './trusted-origins'
 
-export function validateMutationOrigin(origin: string | null, requestUrl: string): boolean {
-  if (!origin) return false
-  try { return new URL(origin).origin === new URL(requestUrl).origin } catch { return false }
+export function validateMutationOrigin(origin: string | null, allowedOrigins: string[]): boolean {
+  return isTrustedMutationOrigin(origin, allowedOrigins)
 }
 
 export function youtubeImportRateLimitKey(method: 'GET' | 'POST', identity: string): string {

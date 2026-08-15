@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import { auth } from './auth'
 import { safeReturnTo } from './auth-policy'
 import { apiSessionGuard } from './session-guard'
+import { isTrustedMutationOrigin } from './trusted-origins'
 
 export async function getServerSession() {
   return auth.api.getSession({ headers: await headers() })
@@ -21,9 +22,7 @@ export async function requireApiSession(request: Request) {
   if (result instanceof Response) return result
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
-    const expected = (process.env.PUBLIC_URL ?? new URL(request.url).origin).replace(/\/+$/, '')
-    const origin = request.headers.get('origin')
-    if (!origin || origin !== new URL(expected).origin) {
+    if (!isTrustedMutationOrigin(request.headers.get('origin'))) {
       return Response.json({ error: 'Invalid request origin' }, { status: 403 })
     }
   }

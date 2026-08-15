@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { Redis } from 'ioredis'
 import { jobId, withQueue } from '../../../../lib/queue'
 import { isUnauthorized, requireApiSession } from '../../../../lib/session'
-import { youtubeImportRateLimitKey, validateMutationOrigin } from '../../../../lib/youtube-import-security'
+import { youtubeImportRateLimitKey } from '../../../../lib/youtube-import-security'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -29,7 +29,6 @@ export async function POST(request: Request) {
   try {
     if (await rateLimited(request, 'POST', 10)) return Response.json({ error: 'Too many import attempts. Retry in one minute.' }, { status: 429 })
   } catch { return Response.json({ error: 'Import protection is temporarily unavailable.' }, { status: 503 }) }
-  if (!validateMutationOrigin(request.headers.get('origin'), request.url)) return Response.json({ error: 'Invalid request origin.' }, { status: 403 })
   const declared = Number(request.headers.get('content-length') ?? 0)
   if (declared > MAX_BODY_BYTES) return Response.json({ error: 'Request body is too large.' }, { status: 413 })
   const text = await request.text()

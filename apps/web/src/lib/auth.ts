@@ -5,6 +5,7 @@ import { createAuthMiddleware } from 'better-auth/api'
 import { betterAuth, type BetterAuthOptions } from 'better-auth/minimal'
 import { resolveAuthSecret } from './auth-secret'
 import { rejectPublicSignUp } from './public-sign-up'
+import { trustedOrigins } from './trusted-origins'
 
 function publicUrl(): string {
   return (process.env.PUBLIC_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
@@ -14,7 +15,7 @@ const authOptions: BetterAuthOptions = {
   appName: 'Crate',
   baseURL: publicUrl(),
   secret: resolveAuthSecret(),
-  trustedOrigins: [publicUrl()],
+  trustedOrigins: trustedOrigins(),
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
   emailAndPassword: {
     enabled: true,
