@@ -214,8 +214,9 @@ export class YtmProvider implements DownloadProvider {
       }]
     }
     const terms = [query.artists.join(' '), query.title].filter(Boolean).join(' ')
-    // ytsearch against music.youtube.com yields the catalogue entries rather than
-    // arbitrary uploads. 10 results is plenty for scoring to find a winner.
+    // Generic acquisition still uses plain YouTube search and its scored candidates.
+    // Canonical metadata confirmation deliberately uses the separate non-flat
+    // music.youtube.com route below; only that route exposes reliable album metadata.
     const target = `ytsearch10:${terms}`
 
     let result: RunResult
@@ -279,11 +280,60 @@ export class YtmProvider implements DownloadProvider {
 
   /** Confirm a title hint against structured YT Music results before it becomes source metadata. */
   async confirmCanonical(query: TrackQuery): Promise<CanonicalYtmTrack | null> {
-    const candidates = (await this.search(query)).filter((candidate) =>
-      candidate.album?.trim()
-      && typeof candidate.detail?.structuredArtist === 'string'
-      && candidate.detail.structuredArtist.trim(),
-    )
+    const terms = [query.artists.join(' '), query.title].filter(Boolean).join(' ')
+    const target = `https://music.youtube.com/search?q=${encodeURIComponent(terms)}`
+
+    let result: RunResult
+    try {
+      await this.space()
+      result = await this.run(
+        this.bin,
+        [
+          target,
+          ...JS_RUNTIME_ARGS,
+          '--dump-json',
+          '--playlist-items',
+          '1:5',
+          '--no-warnings',
+          '--quiet',
+          '--extractor-args',
+          'youtube:player_client=web_music',
+        ],
+        { timeoutMs: 60_000 },
+      )
+    } catch {
+      return null
+    }
+
+    if (result.code !== 0) return null
+
+    const candidates: Candidate[] = []
+    for (const line of result.stdout.split('\n')) {
+      if (!line.trim()) continue
+      let entry: YtDlpEntry
+      try {
+        entry = JSON.parse(line) as YtDlpEntry
+      } catch {
+        continue
+      }
+      const artist = entry.artist?.trim()
+      const album = entry.album?.trim()
+      if (!entry.id || !artist || !album) continue
+
+      candidates.push({
+        id: entry.id,
+        title: entry.title ?? '',
+        artist,
+        album,
+        durationMs: entry.duration ? Math.round(entry.duration * 1000) : undefined,
+        format: entry.ext,
+        bitrate: entry.abr,
+        detail: {
+          albumArtist: entry.album_artist,
+          releaseYear: entry.release_year,
+        },
+      })
+    }
     const ranked = rankCandidates(
       { title: query.title, artists: query.artists, durationMs: query.durationMs ?? null, album: query.album ?? null },
       candidates.map((candidate) => ({
