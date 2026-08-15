@@ -2,6 +2,10 @@ import { spawn } from 'node:child_process'
 import { z } from 'zod'
 
 const HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'])
+/** Defensible ingestion ceilings: enough for very large music lists without unbounded worker memory/DB work. */
+export const MAX_YOUTUBE_PLAYLIST_ITEMS = 2_000
+export const MAX_YTDLP_OUTPUT_BYTES = 16 * 1024 * 1024
+const MAX_YTDLP_STDERR_BYTES = 256 * 1024
 
 /** Server-boundary schema: only ordinary YouTube playlist URLs with a list id. */
 export const YouTubePlaylistUrlSchema = z.string().trim().url().transform((input, ctx) => {
@@ -90,10 +94,18 @@ function run(cmd: string, args: string[], timeoutMs: number): ReturnType<Runner>
     let stdout = ''
     let stderr = ''
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${cmd} timed out after ${timeoutMs}ms`)) }, timeoutMs)
-    child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
-    child.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+    let oversized = false
+    child.stdout.on('data', (data: Buffer) => {
+      if (oversized) return
+      stdout += data.toString()
+      if (Buffer.byteLength(stdout) > MAX_YTDLP_OUTPUT_BYTES) { oversized = true; child.kill('SIGKILL') }
+    })
+    child.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString()
+      if (Buffer.byteLength(stderr) > MAX_YTDLP_STDERR_BYTES) stderr = stderr.slice(-MAX_YTDLP_STDERR_BYTES)
+    })
     child.on('error', (error) => { clearTimeout(timer); reject(error) })
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }) })
+    child.on('close', (code) => { clearTimeout(timer); oversized ? reject(new Error('yt-dlp playlist metadata exceeded the 16 MiB safety limit. Split the playlist and retry.')) : resolve({ code: code ?? -1, stdout, stderr }) })
   })
 }
 
@@ -123,7 +135,14 @@ export class YouTubePlaylistClient {
       throw new Error(`yt-dlp could not read this playlist${detail ? `: ${detail}` : '.'}`)
     }
 
+    if (Buffer.byteLength(result.stdout) > MAX_YTDLP_OUTPUT_BYTES) {
+      throw new Error('yt-dlp playlist metadata exceeded the 16 MiB safety limit. Split the playlist and retry.')
+    }
+
     const playlist = PlaylistSchema.parse(JSON.parse(result.stdout) as unknown)
+    if (playlist.entries.length > MAX_YOUTUBE_PLAYLIST_ITEMS) {
+      throw new Error(`YouTube playlists are limited to 2,000 entries per import. Split this playlist and retry.`)
+    }
     const tracks: YouTubePlaylistTrack[] = []
     let invalidEntries = 0
     for (const raw of playlist.entries) {

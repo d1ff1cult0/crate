@@ -1,4 +1,15 @@
+import { deriveYouTubeImportStatus } from '@crate/core'
 import { prisma } from '@crate/db'
+
+export interface PersistedPlaylistWriteOutcome { written: number; problems: number; navidromeSync: 'ok' | 'failed' | 'disabled' }
+
+export async function recordYouTubePlaylistWriteOutcome(sourcePlaylistId: string, outcome: PersistedPlaylistWriteOutcome): Promise<void> {
+  const runs = await prisma.importRun.findMany({ where: { kind: 'YOUTUBE_PLAYLIST', sourcePlaylistId }, select: { id: true, detailJson: true } })
+  for (const run of runs) {
+    const prior = typeof run.detailJson === 'object' && run.detailJson && !Array.isArray(run.detailJson) ? run.detailJson as Record<string, unknown> : {}
+    await prisma.importRun.update({ where: { id: run.id }, data: { detailJson: { ...prior, m3uEntries: outcome.written, mappingOmissions: outcome.problems, navidromeSync: outcome.navidromeSync } } })
+  }
+}
 
 /** Recompute durable import status from the database; safe after every job transition. */
 export async function refreshYouTubeImportsForTrack(sourceTrackId: string): Promise<void> {
@@ -6,7 +17,7 @@ export async function refreshYouTubeImportsForTrack(sourceTrackId: string): Prom
     where: {
       kind: 'YOUTUBE_PLAYLIST',
       sourcePlaylistId: { not: null },
-      status: { in: ['QUEUED', 'RUNNING'] },
+      status: { in: ['QUEUED', 'RUNNING', 'PARTIAL'] },
     },
     select: { id: true, sourcePlaylistId: true, detailJson: true },
   })
@@ -33,13 +44,11 @@ export async function refreshYouTubeImport(importRunId: string): Promise<void> {
       },
     },
   })
-  let available = 0
   let downloaded = 0
   let failed = 0
   let outstanding = 0
   const errors: string[] = []
   for (const item of items) {
-    if (item.sourceTrack.match?.status === 'MATCHED') available++
     const request = item.sourceTrack.downloads[0]
     if (request?.status === 'SUCCEEDED') downloaded++
     else if (request?.status === 'FAILED' || request?.status === 'ABANDONED') {
@@ -55,19 +64,18 @@ export async function refreshYouTubeImport(importRunId: string): Promise<void> {
   const prior = typeof run.detailJson === 'object' && run.detailJson && !Array.isArray(run.detailJson)
     ? run.detailJson as Record<string, unknown> : {}
   const invalidEntries = typeof prior.invalidEntries === 'number' ? prior.invalidEntries : 0
-  const status = outstanding > 0 ? 'RUNNING' : failed > 0 || invalidEntries > 0 ? 'PARTIAL' : 'SUCCEEDED'
+  const m3uEntries = typeof prior.m3uEntries === 'number' ? prior.m3uEntries : 0
+  const mappingOmissions = typeof prior.mappingOmissions === 'number' ? prior.mappingOmissions : 0
+  const navidromeSync = prior.navidromeSync === 'failed' || prior.navidromeSync === 'ok' ? prior.navidromeSync : 'disabled'
+  const derived = deriveYouTubeImportStatus({ expected: items.length, m3uEntries, mappingOmissions, outstanding, failed, invalidEntries, navidromeSync })
   await prisma.importRun.update({
     where: { id: run.id },
     data: {
-      status,
-      tracksAvailable: available,
+      status: derived.status,
+      tracksAvailable: m3uEntries,
       tracksSucceeded: downloaded,
       tracksFailed: failed,
-      message: status === 'SUCCEEDED'
-        ? `All ${items.length} tracks are available.`
-        : status === 'RUNNING'
-          ? `${available} of ${items.length} tracks are available; ${outstanding} still queued or running.`
-          : `${available} of ${items.length} tracks are available; ${failed + invalidEntries} could not be imported.`,
+      message: derived.message,
       detailJson: { ...prior, errors },
     },
   })

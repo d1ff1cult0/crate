@@ -45,6 +45,7 @@ services:
     environment:
       DATABASE_URL: postgresql://crate:${POSTGRES_PASSWORD}@postgres:5432/crate
       REDIS_URL: redis://redis:6379
+      CRATE_YOUTUBE_IMPORT_TOKEN: ${CRATE_YOUTUBE_IMPORT_TOKEN:-}
       CRATE_ENCRYPTION_KEY: ${CRATE_ENCRYPTION_KEY:?32-byte base64 key; losing it means re-entering every credential}
       CRATE_SESSION_SECRET: ${CRATE_SESSION_SECRET:?set CRATE_SESSION_SECRET in .env}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}

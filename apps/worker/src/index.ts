@@ -115,13 +115,15 @@ async function main() {
           return reconcileDownloadQueue(ctx)
         }
         const requestId = String(job.data.requestId)
-        const result = await runDownload(ctx, {
-          requestId,
-          ...(Array.isArray(job.data.exclude) ? { exclude: job.data.exclude as string[] } : {}),
-        })
-        const request = await prisma.downloadRequest.findUnique({ where: { id: requestId }, select: { sourceTrackId: true } })
-        if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
-        return result
+        try {
+          return await runDownload(ctx, { requestId, ...(Array.isArray(job.data.exclude) ? { exclude: job.data.exclude as string[] } : {}) })
+        } catch (error) {
+          await prisma.downloadRequest.updateMany({ where: { id: requestId, status: { in: ['QUEUED', 'RUNNING'] } }, data: { status: 'FAILED', lastError: error instanceof Error ? error.message : String(error) } })
+          throw error
+        } finally {
+          const request = await prisma.downloadRequest.findUnique({ where: { id: requestId }, select: { sourceTrackId: true } })
+          if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
+        }
       }),
     ),
 
@@ -136,22 +138,27 @@ async function main() {
     createWorker(
       'postprocess',
       tracked('postprocess', async (ctx, job) => {
-        const result = await runPostprocess(ctx, {
-          requestId: String(job.data.requestId),
-          stagedPath: String(job.data.stagedPath),
-          provider: String(job.data.provider),
-        })
-        // §7.6 step 1: a file that fails verification falls through to the next
-        // provider. Across a queue boundary that means re-queueing the download with
-        // this provider excluded, rather than failing the job.
-        if (result.rejected) {
-          await retryAfterRejection(String(job.data.requestId), String(job.data.provider))
+        const requestId = String(job.data.requestId)
+        try {
+          const result = await runPostprocess(ctx, {
+            requestId,
+            stagedPath: String(job.data.stagedPath),
+            provider: String(job.data.provider),
+          })
+          // §7.6 step 1: a file that fails verification falls through to the next
+          // provider. Across a queue boundary that means re-queueing the download with
+          // this provider excluded, rather than failing the job.
+          if (result.rejected) {
+            await retryAfterRejection(requestId, String(job.data.provider))
+          }
+          return result
+        } catch (error) {
+          await prisma.downloadRequest.updateMany({ where: { id: requestId, status: { in: ['QUEUED', 'RUNNING'] } }, data: { status: 'FAILED', lastError: error instanceof Error ? error.message : String(error) } })
+          throw error
+        } finally {
+          const request = await prisma.downloadRequest.findUnique({ where: { id: requestId }, select: { sourceTrackId: true } })
+          if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
         }
-        const request = await prisma.downloadRequest.findUnique({
-          where: { id: String(job.data.requestId) }, select: { sourceTrackId: true },
-        })
-        if (request) await refreshYouTubeImportsForTrack(request.sourceTrackId)
-        return result
       }),
     ),
 

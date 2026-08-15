@@ -13,6 +13,17 @@ describe('YouTubePlaylistUrlSchema', () => {
 })
 
 describe('YouTube playlist resolution', () => {
+  it('rejects a playlist beyond the documented item cap', async () => {
+    const output = JSON.stringify({ id: 'PL1234567890', title: 'Too large', entries: Array.from({ length: 2001 }, (_, i) => ({ id: `video-${i}`, title: `Track ${i}` })) })
+    const client = new YouTubePlaylistClient({ runner: async () => ({ code: 0, stdout: output, stderr: '' }) })
+    await expect(client.resolve('https://www.youtube.com/playlist?list=PL1234567890')).rejects.toThrow(/2,000/)
+  })
+
+  it('rejects yt-dlp output beyond the documented byte cap', async () => {
+    const client = new YouTubePlaylistClient({ runner: async () => ({ code: 0, stdout: 'x'.repeat(16 * 1024 * 1024 + 1), stderr: '' }) })
+    await expect(client.resolve('https://www.youtube.com/playlist?list=PL1234567890')).rejects.toThrow(/16 MiB/)
+  })
+
   it('deduplicates repeated videos while preserving first-seen order', () => {
     const make = (videoId: string, title = videoId) => ({ videoId, title, artists: ['A'], raw: {} })
     expect(dedupeYouTubeEntries([make('a'), make('b'), make('a', 'repeat')])).toEqual({

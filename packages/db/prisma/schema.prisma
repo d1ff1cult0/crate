@@ -332,7 +332,7 @@ model DownloadRequest {
   attempts    DownloadAttempt[]
 
   @@index([status, priority])
-  @@index([sourceTrackId])
+  @@unique([sourceTrackId])
 }
 
 model DownloadAttempt {

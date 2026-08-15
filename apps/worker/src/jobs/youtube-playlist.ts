@@ -3,7 +3,7 @@ import { prisma } from '@crate/db'
 import { YouTubePlaylistClient, YouTubePlaylistUrlSchema } from '@crate/integrations'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { requestDownload } from '../lib/download-queue.js'
-import { refreshYouTubeImport } from '../lib/youtube-import-status.js'
+import { recordYouTubePlaylistWriteOutcome, refreshYouTubeImport } from '../lib/youtube-import-status.js'
 import { materializePlaylist, triggerScan, writePlaylist } from './playlist.js'
 import { runMatchSweep } from './match.js'
 
@@ -61,12 +61,12 @@ export async function runYouTubePlaylistImport(
       sourceTrackIds.push(sourceTrack.id)
     }
 
-    await prisma.$transaction([
-      prisma.sourcePlaylistItem.deleteMany({ where: { playlistId: sourcePlaylist.id } }),
-      prisma.sourcePlaylistItem.createMany({
-        data: sourceTrackIds.map((sourceTrackId, position) => ({ playlistId: sourcePlaylist.id, sourceTrackId, position })),
-      }),
-      prisma.importRun.update({
+    await prisma.sourcePlaylistItem.deleteMany({ where: { playlistId: sourcePlaylist.id } })
+    // Keep transactions and SQL parameter counts bounded for the 2,000-item ceiling.
+    for (let offset = 0; offset < sourceTrackIds.length; offset += 250) {
+      await prisma.sourcePlaylistItem.createMany({ data: sourceTrackIds.slice(offset, offset + 250).map((sourceTrackId, index) => ({ playlistId: sourcePlaylist.id, sourceTrackId, position: offset + index })) })
+    }
+    await prisma.importRun.update({
         where: { id: input.importRunId },
         data: {
           playlistName: resolved.name, imageUrl: resolved.imageUrl, sourcePlaylistId: sourcePlaylist.id,
@@ -74,8 +74,7 @@ export async function runYouTubePlaylistImport(
           tracksDuplicate: resolved.duplicates,
           detailJson: { invalidEntries: resolved.invalidEntries, playlistId: resolved.playlistId, errors: [] },
         },
-      }),
-    ])
+      })
 
     const matched = await runMatchSweep(ctx, { sourceTrackIds })
     await ctx.log('info', 'Checked the existing library before downloading', matched)
@@ -93,7 +92,8 @@ export async function runYouTubePlaylistImport(
 
     const playlistId = await materializePlaylist(ctx, sourcePlaylist.id)
     if (playlistId) {
-      await writePlaylist(ctx, playlistId)
+      const outcome = await writePlaylist(ctx, playlistId)
+      if (outcome) await recordYouTubePlaylistWriteOutcome(sourcePlaylist.id, outcome)
       await triggerScan(ctx)
     }
     await refreshYouTubeImport(input.importRunId)

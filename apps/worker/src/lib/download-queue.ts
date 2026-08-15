@@ -171,9 +171,8 @@ export async function requestDownload(
   sourceTrackId: string,
   opts: { priority?: number; retryAbandoned?: boolean } = {},
 ): Promise<{ requestId: string; created: boolean; enqueued: boolean }> {
-  const existing = await prisma.downloadRequest.findFirst({
+  const existing = await prisma.downloadRequest.findUnique({
     where: { sourceTrackId },
-    orderBy: { createdAt: 'desc' },
   })
 
   // Already satisfied, or deliberately held — leave both alone.
@@ -203,12 +202,16 @@ export async function requestDownload(
           ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
         },
       })
-    : await prisma.downloadRequest.create({
-        data: {
+    : await prisma.downloadRequest.upsert({
+        where: { sourceTrackId },
+        create: {
           sourceTrackId,
           status: 'QUEUED',
           ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
         },
+        // A concurrent caller may have created the row after our read. Preserve that
+        // exact request/job identity and merely converge it to the requested priority.
+        update: { ...(opts.priority !== undefined ? { priority: opts.priority } : {}) },
       })
 
   const enqueued = await ensureJobFor(request.id, request.priority)

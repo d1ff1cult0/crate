@@ -21,6 +21,7 @@ import {
   buildM3u,
   buildMissingSidecar,
   sanitizeFilename,
+  stablePlaylistBasename,
   type M3uEntry,
   type MissingSidecarEntry,
   type PathMapping,
@@ -31,6 +32,7 @@ import { decryptJson } from '../lib/crypto.js'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { requestNavidromeScan } from '../lib/navidrome.js'
 import { loadSettings } from '../lib/settings.js'
+import { recordYouTubePlaylistWriteOutcome, refreshYouTubeImport } from '../lib/youtube-import-status.js'
 
 /**
  * Atomic write: temp file in the same directory (so rename stays on one filesystem),
@@ -55,6 +57,7 @@ export interface PlaylistWriteResult {
   written: number
   missing: number
   problems: number
+  navidromeSync: 'ok' | 'failed' | 'disabled'
   subsonicId?: string | undefined
 }
 
@@ -123,8 +126,9 @@ export async function writePlaylist(
     }
   }
 
-  const fileName = `${sanitizeFilename(playlist.name)}.m3u8`
-  const m3uPath = join(musicRoot, fileName)
+  // Persisted paths win forever; new paths use immutable Playlist identity, never a
+  // mutable/colliding title. This also makes legacy title changes harmless.
+  const m3uPath = playlist.m3uPath ?? join(musicRoot, `${stablePlaylistBasename(playlist.name, playlist.id)}.m3u8`)
 
   const built = buildM3u(entries, {
     name: playlist.name,
@@ -141,7 +145,7 @@ export async function writePlaylist(
 
   // Sidecar: written when there are gaps, removed when there are none, so a stale
   // sidecar never outlives the gaps it described.
-  const sidecarPath = join(musicRoot, `${sanitizeFilename(playlist.name)}.missing.json`)
+  const sidecarPath = m3uPath.replace(/\.m3u8$/i, '.missing.json')
   if (missing.length > 0) {
     await writeFile(sidecarPath, buildMissingSidecar(playlist.name, missing), 'utf8')
   } else {
@@ -149,7 +153,8 @@ export async function writePlaylist(
   }
 
   // Also push to Navidrome so it appears without waiting for a scan (§7.9).
-  let subsonicId: string | undefined
+  let subsonicId = playlist.subsonicId ?? undefined
+  let navidromeSync: 'ok' | 'failed' | 'disabled' = 'disabled'
   const connection = await prisma.connection.findUnique({ where: { provider: 'navidrome' } })
   if (connection?.enabled && connection.secretCipher) {
     try {
@@ -157,10 +162,13 @@ export async function writePlaylist(
         connection.secretCipher,
       )
       const subsonic = new SubsonicClient(creds)
-      const existing = await subsonic.getPlaylists()
-      const match = existing.find((p) => p.name === playlist.name)
-      subsonicId = match?.id ?? (await subsonic.createPlaylist(playlist.name)) ?? undefined
+      // A display name is not identity. Only reuse the ID previously persisted for this
+      // exact Crate playlist; otherwise create a distinct remote playlist.
+      subsonicId = subsonicId ?? (await subsonic.createPlaylist(playlist.name)) ?? undefined
+      if (!subsonicId) throw new Error('Navidrome did not return a playlist id.')
+      navidromeSync = 'ok'
     } catch (err) {
+      navidromeSync = 'failed'
       // The m3u is the source of truth, so a Subsonic failure is a warning, not a
       // failed job — the playlist still lands on the next scan.
       await ctx.log('warn', 'Could not sync the playlist to Navidrome over Subsonic', {
@@ -182,6 +190,7 @@ export async function writePlaylist(
     written: built.entriesWritten,
     missing: missing.length,
     problems: built.problems.length,
+    navidromeSync,
     m3uPath,
   })
 
@@ -192,6 +201,7 @@ export async function writePlaylist(
     written: built.entriesWritten,
     missing: missing.length,
     problems: built.problems.length,
+    navidromeSync,
     subsonicId,
   }
 }
@@ -294,7 +304,15 @@ export async function writeAffectedPlaylists(
   let written = 0
   for (const { playlistId } of items) {
     const result = await writePlaylist(ctx, playlistId)
-    if (result) written += 1
+    if (result) {
+      written += 1
+      const source = await prisma.sourcePlaylist.findUnique({ where: { playlistId }, select: { id: true } })
+      if (source) {
+        await recordYouTubePlaylistWriteOutcome(source.id, result)
+        const runs = await prisma.importRun.findMany({ where: { kind: 'YOUTUBE_PLAYLIST', sourcePlaylistId: source.id }, select: { id: true } })
+        for (const run of runs) await refreshYouTubeImport(run.id)
+      }
+    }
   }
 
   await triggerScan(ctx)
