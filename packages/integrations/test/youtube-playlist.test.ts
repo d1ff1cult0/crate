@@ -13,6 +13,45 @@ describe('YouTubePlaylistUrlSchema', () => {
 })
 
 describe('YouTube playlist resolution', () => {
+  it('never treats an ordinary uploader as canonical music metadata', async () => {
+    const output = JSON.stringify({ id: 'PL1234567890', title: 'Bad production entries', entries: [
+      { id: 'ordinary-upload', title: 'Polo & Pan - Ani Kuni', uploader: 'WMW LABEL' },
+      { id: 'ambiguous-upload', title: 'Ani Kuni', uploader: 'WMW LABEL' },
+    ] })
+    const client = new YouTubePlaylistClient({ runner: async () => ({ code: 0, stdout: output, stderr: '' }) })
+
+    const resolved = await client.resolve('https://www.youtube.com/playlist?list=PL1234567890')
+
+    expect(resolved.tracks).toEqual([
+      expect.objectContaining({
+        videoId: 'ordinary-upload',
+        title: 'Ani Kuni',
+        artists: ['Polo & Pan'],
+      }),
+    ])
+    expect(resolved.tracks[0]).not.toHaveProperty('album')
+    expect(resolved.tracks[0]?.artists).not.toContain('WMW LABEL')
+    expect(resolved.invalidEntries).toBe(1)
+  })
+
+  it('preserves genuinely structured YouTube Music metadata with a non-empty album', async () => {
+    const output = JSON.stringify({ id: 'PL1234567890', title: 'Music', entries: [
+      { id: 'ytm-track', title: 'Ani Kuni', artist: 'Polo & Pan', album: 'Cyclorama', album_artist: 'Polo & Pan' },
+      { id: 'dash-track', title: 'Air – La femme d’argent', uploader: 'Label channel' },
+    ] })
+    const client = new YouTubePlaylistClient({ runner: async () => ({ code: 0, stdout: output, stderr: '' }) })
+
+    const resolved = await client.resolve('https://www.youtube.com/playlist?list=PL1234567890')
+
+    expect(resolved.tracks[0]).toEqual(expect.objectContaining({
+      metadataSource: 'structured', album: 'Cyclorama', albumArtist: 'Polo & Pan', artists: ['Polo & Pan'],
+    }))
+    expect(resolved.tracks[0]?.album).not.toBe('')
+    expect(resolved.tracks[1]).toEqual(expect.objectContaining({
+      metadataSource: 'title', title: 'La femme d’argent', artists: ['Air'],
+    }))
+  })
+
   it('rejects a playlist beyond the documented item cap', async () => {
     const output = JSON.stringify({ id: 'PL1234567890', title: 'Too large', entries: Array.from({ length: 2001 }, (_, i) => ({ id: `video-${i}`, title: `Track ${i}` })) })
     const client = new YouTubePlaylistClient({ runner: async () => ({ code: 0, stdout: output, stderr: '' }) })
@@ -25,7 +64,7 @@ describe('YouTube playlist resolution', () => {
   })
 
   it('deduplicates repeated videos while preserving first-seen order', () => {
-    const make = (videoId: string, title = videoId) => ({ videoId, title, artists: ['A'], raw: {} })
+    const make = (videoId: string, title = videoId) => ({ videoId, title, artists: ['A'], metadataSource: 'structured' as const, raw: {} })
     expect(dedupeYouTubeEntries([make('a'), make('b'), make('a', 'repeat')])).toEqual({
       tracks: [make('a'), make('b')], duplicates: 1,
     })

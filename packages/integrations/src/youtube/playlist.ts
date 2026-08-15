@@ -33,6 +33,7 @@ const EntrySchema = z.object({
   uploader: z.string().optional(),
   channel: z.string().optional(),
   album: z.string().optional(),
+  album_artist: z.string().optional(),
   duration: z.number().nonnegative().optional(),
   track_number: z.number().int().positive().optional(),
   release_year: z.number().int().optional(),
@@ -53,8 +54,10 @@ export interface YouTubePlaylistTrack {
   title: string
   artists: string[]
   album?: string
+  albumArtist?: string
   durationMs?: number
   year?: number
+  metadataSource: 'structured' | 'title'
   raw: Record<string, unknown>
 }
 
@@ -87,6 +90,13 @@ export function dedupeYouTubeEntries(entries: YouTubePlaylistTrack[]): {
 }
 
 type Runner = (cmd: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
+
+/** Ordinary YouTube titles are only useful when they state an unambiguous Artist - Title pair. */
+function parseArtistTitle(title: string): { artist: string; title: string } | null {
+  const parts = title.split(/\s+[\-\u2010-\u2015]\s+/u).map((part) => part.trim())
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null
+  return { artist: parts[0], title: parts[1] }
+}
 
 function run(cmd: string, args: string[], timeoutMs: number): ReturnType<Runner> {
   return new Promise((resolve, reject) => {
@@ -148,15 +158,19 @@ export class YouTubePlaylistClient {
     for (const raw of playlist.entries) {
       const entry = EntrySchema.safeParse(raw)
       if (!entry.success) { invalidEntries++; continue }
-      const artist = (entry.data.artist ?? entry.data.channel ?? entry.data.uploader ?? 'Unknown artist')
-        .replace(/\s+-\s+Topic$/i, '').trim()
+      const structuredArtist = entry.data.artist?.trim()
+      const parsedTitle = structuredArtist ? null : parseArtistTitle(entry.data.title)
+      if (!structuredArtist && !parsedTitle) { invalidEntries++; continue }
+      const artist = (structuredArtist ?? parsedTitle!.artist).replace(/\s+-\s+Topic$/i, '').trim()
       tracks.push({
         videoId: entry.data.id,
-        title: entry.data.title,
+        title: parsedTitle?.title ?? entry.data.title,
         artists: [artist],
         ...(entry.data.album ? { album: entry.data.album } : {}),
+        ...(entry.data.album_artist ? { albumArtist: entry.data.album_artist } : {}),
         ...(entry.data.duration !== undefined ? { durationMs: Math.round(entry.data.duration * 1000) } : {}),
         ...(entry.data.release_year !== undefined ? { year: entry.data.release_year } : {}),
+        metadataSource: structuredArtist ? 'structured' : 'title',
         raw: entry.data,
       })
     }

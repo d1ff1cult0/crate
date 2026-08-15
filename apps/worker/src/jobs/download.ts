@@ -112,6 +112,12 @@ export async function runDownload(
   }
 
   const source = request.sourceTrack
+  const raw = source.rawJson && typeof source.rawJson === 'object' && !Array.isArray(source.rawJson)
+    ? source.rawJson as Record<string, unknown>
+    : null
+  const preferredCandidateId = source.source === 'YOUTUBE' && typeof raw?.crateCanonicalYtmVideoId === 'string'
+    ? raw.crateCanonicalYtmVideoId
+    : undefined
   const query: TrackQuery = {
     title: source.title,
     artists: source.artists,
@@ -119,6 +125,7 @@ export async function runDownload(
     durationMs: source.durationMs ?? undefined,
     isrc: source.isrc ?? undefined,
     year: source.year ?? undefined,
+    ...(preferredCandidateId ? { preferredCandidateId } : {}),
   }
   const label = queryString(query)
 

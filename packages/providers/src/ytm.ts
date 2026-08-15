@@ -19,6 +19,7 @@
 import { spawn } from 'node:child_process'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { rankCandidates } from '@crate/core'
 import type {
   Candidate,
   DownloadProvider,
@@ -110,9 +111,21 @@ interface YtDlpEntry {
   channel?: string
   artist?: string
   album?: string
+  album_artist?: string
+  release_year?: number
   duration?: number
   ext?: string
   abr?: number
+}
+
+export interface CanonicalYtmTrack {
+  videoId: string
+  title: string
+  artists: string[]
+  album: string
+  albumArtist: string
+  durationMs?: number
+  year?: number
 }
 
 
@@ -190,6 +203,16 @@ export class YtmProvider implements DownloadProvider {
    * against.
    */
   async search(query: TrackQuery): Promise<Candidate[]> {
+    if (query.preferredCandidateId) {
+      return [{
+        id: query.preferredCandidateId,
+        title: query.title,
+        artist: query.artists.join(', '),
+        album: query.album,
+        durationMs: query.durationMs,
+        detail: { videoId: query.preferredCandidateId, catalogConfirmed: true },
+      }]
+    }
     const terms = [query.artists.join(' '), query.title].filter(Boolean).join(' ')
     // ytsearch against music.youtube.com yields the catalogue entries rather than
     // arbitrary uploads. 10 results is plenty for scoring to find a winner.
@@ -240,11 +263,58 @@ export class YtmProvider implements DownloadProvider {
         durationMs: entry.duration ? Math.round(entry.duration * 1000) : undefined,
         format: entry.ext,
         bitrate: entry.abr,
-        detail: { videoId: entry.id, uploader: entry.uploader, channel: entry.channel },
+        detail: {
+          videoId: entry.id,
+          uploader: entry.uploader,
+          channel: entry.channel,
+          structuredArtist: entry.artist,
+          albumArtist: entry.album_artist,
+          releaseYear: entry.release_year,
+        },
       })
     }
 
     return candidates
+  }
+
+  /** Confirm a title hint against structured YT Music results before it becomes source metadata. */
+  async confirmCanonical(query: TrackQuery): Promise<CanonicalYtmTrack | null> {
+    const candidates = (await this.search(query)).filter((candidate) =>
+      candidate.album?.trim()
+      && typeof candidate.detail?.structuredArtist === 'string'
+      && candidate.detail.structuredArtist.trim(),
+    )
+    const ranked = rankCandidates(
+      { title: query.title, artists: query.artists, durationMs: query.durationMs ?? null, album: query.album ?? null },
+      candidates.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        artist: candidate.artist,
+        album: candidate.album ?? null,
+        durationMs: candidate.durationMs ?? null,
+        format: candidate.format ?? null,
+        bitrate: candidate.bitrate ?? null,
+      })),
+      { durationToleranceMs: 5_000, minBitrateKbps: 0, acceptFloor: 0.8, artistPlausibilityFloor: 0.8 },
+    )
+    const winner = ranked[0]
+    if (!winner || winner.rejected) return null
+    const candidate = candidates.find((item) => item.id === winner.id)
+    if (!candidate?.album) return null
+    const detailAlbumArtist = typeof candidate.detail?.albumArtist === 'string'
+      ? candidate.detail.albumArtist.trim()
+      : ''
+    const albumArtist = detailAlbumArtist || candidate.artist.trim()
+    const year = candidate.detail?.releaseYear
+    return {
+      videoId: candidate.id,
+      title: candidate.title,
+      artists: [candidate.artist.replace(/\s+-\s+Topic$/i, '').trim()],
+      album: candidate.album,
+      albumArtist: albumArtist.replace(/\s+-\s+Topic$/i, '').trim(),
+      ...(candidate.durationMs !== undefined ? { durationMs: candidate.durationMs } : {}),
+      ...(typeof year === 'number' ? { year } : {}),
+    }
   }
 
   /**

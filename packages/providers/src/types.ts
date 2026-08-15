@@ -15,6 +15,8 @@ export interface TrackQuery {
   durationMs?: number | undefined
   isrc?: string | undefined
   year?: number | undefined
+  /** Exact provider catalog id already confirmed upstream; providers must not substitute another recording. */
+  preferredCandidateId?: string | undefined
 }
 
 export interface Candidate {

@@ -1,6 +1,7 @@
 import { normalizeTrack } from '@crate/core'
 import { prisma } from '@crate/db'
 import { YouTubePlaylistClient, YouTubePlaylistUrlSchema } from '@crate/integrations'
+import { YtmProvider } from '@crate/providers'
 import type { JobRunContext } from '../lib/jobrun.js'
 import { requestDownload } from '../lib/download-queue.js'
 import { recordYouTubePlaylistWriteOutcome, refreshYouTubeImport } from '../lib/youtube-import-status.js'
@@ -17,14 +18,45 @@ export async function runYouTubePlaylistImport(
 
   try {
     const resolved = await new YouTubePlaylistClient().resolve(boundary.url)
-    if (resolved.tracks.length === 0) throw new Error('YouTube returned no readable music entries for this playlist.')
+    const ytm = new YtmProvider()
+    const confirmedTracks: Array<(typeof resolved.tracks)[number] & { canonicalVideoId: string; album: string; albumArtist: string }> = []
+    let unconfirmedEntries = 0
+    for (const track of resolved.tracks) {
+      if (track.metadataSource === 'structured' && track.album?.trim()) {
+        confirmedTracks.push({
+          ...track,
+          canonicalVideoId: track.videoId,
+          album: track.album,
+          albumArtist: track.albumArtist?.trim() || track.artists[0]!,
+        })
+        continue
+      }
+      const canonical = await ytm.confirmCanonical({
+        title: track.title,
+        artists: track.artists,
+        durationMs: track.durationMs,
+      })
+      if (!canonical?.album.trim()) { unconfirmedEntries++; continue }
+      confirmedTracks.push({
+        ...track,
+        title: canonical.title,
+        artists: canonical.artists,
+        album: canonical.album,
+        albumArtist: canonical.albumArtist,
+        durationMs: canonical.durationMs ?? track.durationMs,
+        year: canonical.year ?? track.year,
+        canonicalVideoId: canonical.videoId,
+      })
+    }
+    if (confirmedTracks.length === 0) throw new Error('YouTube returned no album-bearing tracks that could be confirmed in the YouTube Music catalog.')
     await ctx.log('info', `Resolved ${resolved.name}`, {
-      entries: resolved.tracks.length,
+      entries: confirmedTracks.length,
       duplicatesRemoved: resolved.duplicates,
       invalidEntries: resolved.invalidEntries,
+      unconfirmedEntries,
     })
 
-    const externalIds = resolved.tracks.map((track) => track.videoId)
+    const externalIds = confirmedTracks.map((track) => track.videoId)
     const existing = await prisma.sourceTrack.findMany({
       where: { source: 'YOUTUBE', externalId: { in: externalIds } }, select: { externalId: true },
     })
@@ -34,28 +66,30 @@ export async function runYouTubePlaylistImport(
       create: {
         source: 'YOUTUBE', externalId: resolved.playlistId, name: resolved.name,
         ownerName: resolved.ownerName, imageUrl: resolved.imageUrl,
-        trackTotal: resolved.tracks.length, lastSyncedAt: new Date(), fullReadAt: new Date(),
+        trackTotal: confirmedTracks.length, lastSyncedAt: new Date(), fullReadAt: new Date(),
       },
       update: {
         name: resolved.name, ownerName: resolved.ownerName, imageUrl: resolved.imageUrl,
-        trackTotal: resolved.tracks.length, lastSyncedAt: new Date(), fullReadAt: new Date(),
+        trackTotal: confirmedTracks.length, lastSyncedAt: new Date(), fullReadAt: new Date(),
       },
     })
 
     const sourceTrackIds: string[] = []
-    for (const track of resolved.tracks) {
+    for (const track of confirmedTracks) {
       const normalized = normalizeTrack({ title: track.title, artists: track.artists })
       const sourceTrack = await prisma.sourceTrack.upsert({
         where: { source_externalId: { source: 'YOUTUBE', externalId: track.videoId } },
         create: {
           source: 'YOUTUBE', externalId: track.videoId, title: track.title, artists: track.artists,
-          album: track.album, durationMs: track.durationMs, year: track.year, isrcStatus: 'UNAVAILABLE',
-          normTitle: normalized.title.norm, normArtist: normalized.artist.norm, rawJson: track.raw as object,
+          albumArtist: track.albumArtist, album: track.album, durationMs: track.durationMs, year: track.year, isrcStatus: 'UNAVAILABLE',
+          normTitle: normalized.title.norm, normArtist: normalized.artist.norm,
+          rawJson: { ...track.raw, crateCanonicalYtmVideoId: track.canonicalVideoId } as object,
         },
         update: {
-          title: track.title, artists: track.artists, album: track.album,
+          title: track.title, artists: track.artists, albumArtist: track.albumArtist, album: track.album,
           durationMs: track.durationMs, year: track.year,
-          normTitle: normalized.title.norm, normArtist: normalized.artist.norm, rawJson: track.raw as object,
+          normTitle: normalized.title.norm, normArtist: normalized.artist.norm,
+          rawJson: { ...track.raw, crateCanonicalYtmVideoId: track.canonicalVideoId } as object,
         },
       })
       sourceTrackIds.push(sourceTrack.id)
@@ -70,9 +104,9 @@ export async function runYouTubePlaylistImport(
         where: { id: input.importRunId },
         data: {
           playlistName: resolved.name, imageUrl: resolved.imageUrl, sourcePlaylistId: sourcePlaylist.id,
-          tracksFound: resolved.tracks.length, tracksNew: externalIds.filter((id) => !existingIds.has(id)).length,
+          tracksFound: confirmedTracks.length, tracksNew: externalIds.filter((id) => !existingIds.has(id)).length,
           tracksDuplicate: resolved.duplicates,
-          detailJson: { invalidEntries: resolved.invalidEntries, playlistId: resolved.playlistId, errors: [] },
+          detailJson: { invalidEntries: resolved.invalidEntries, unconfirmedEntries, playlistId: resolved.playlistId, errors: [] },
         },
       })
 
