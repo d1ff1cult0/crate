@@ -16,8 +16,30 @@ struct SettingsView: View {
                     Text("Crate \(AppInfo.version)").textStyle(.small).foregroundStyle(Tok.fgMuted)
                 }
 
+                SettingsCard(title: "Updates", symbol: "arrow.down.app") {
+                    SettingsRow(title: "Crate \(AppInfo.version)", detail: updateDetail) {
+                        HStack(spacing: 8) {
+                            if app.updater.phase == .checking || app.updater.phase == .downloading || app.updater.phase == .installing {
+                                ProgressView().controlSize(.small)
+                            }
+                            if app.updater.isUpdateAvailable {
+                                Button("Install \(app.updater.latest?.version ?? "")") { Task { await app.updater.install() } }
+                                    .buttonStyle(.crate(.primary, size: .sm))
+                            } else {
+                                Button("Check now") { Task { await app.updater.check(userInitiated: true) } }
+                                    .buttonStyle(.crate(.secondary, size: .sm))
+                                    .disabled(!app.updater.isSupported || app.updater.phase == .checking)
+                            }
+                        }
+                    }
+                    Hairline()
+                    SettingsRow(title: "Check for updates automatically", detail: "Looks for a new release on GitHub at launch and every few hours. Installing always waits for you.") {
+                        Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).tint(Tok.accent).labelsHidden()
+                    }
+                }
+
                 SettingsCard(title: "Account", symbol: "server.rack") {
-                    SettingsRow(title: app.account?.username ?? "", detail: app.account?.url.absoluteString ?? "") {
+                    SettingsRow(title: app.account?.username ?? "", detail: app.displayHost) {
                         HStack(spacing: 8) {
                             Pill(text: connectivityLabel, hue: app.isOffline ? .amber : .green)
                             Button("Sign out") { app.logout() }.buttonStyle(.crate(.secondary, size: .sm))
@@ -210,6 +232,20 @@ struct SettingsView: View {
             Text(label).textStyle(.small).foregroundStyle(Tok.fgSecondary)
             Spacer()
             Text(keys).textStyle(.smallStrong).foregroundStyle(Tok.fgMuted)
+        }
+    }
+
+    private var updateDetail: String {
+        let updater = app.updater
+        guard updater.isSupported else { return "Updates are turned off for development builds." }
+        switch updater.phase {
+        case .checking: return "Checking GitHub for a new release…"
+        case .available: return "Version \(updater.latest?.version ?? "") is available. Installing replaces this copy and reopens Crate; your library, downloads and settings stay."
+        case .downloading: return "Downloading the update…"
+        case .installing: return "Installing…"
+        case .upToDate: return "You're on the latest version."
+        case let .failed(message): return message
+        case .idle: return updater.lastCheck.map { "Last checked \(Format.relative($0))." } ?? "Updates come from the project's GitHub releases."
         }
     }
 

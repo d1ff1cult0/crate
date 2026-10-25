@@ -42,6 +42,7 @@ struct Sidebar: View {
             .fadeBottom(24)
 
             Spacer(minLength: 0)
+            UpdateCard()
             NavItem(route: .settings)
             AccountRow()
                 .padding(.top, 6)
@@ -254,6 +255,43 @@ struct PinnedRow: View {
     }
 }
 
+/// Shown above Settings when a new version is out; installs in place and relaunches.
+struct UpdateCard: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let updater = app.updater
+        switch updater.phase {
+        case .available, .downloading, .installing:
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.app.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Tok.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Crate \(updater.latest?.version ?? "")").textStyle(.smallStrong).foregroundStyle(Tok.fg)
+                    Text(updater.phase == .available ? "Update available" : "Updating…")
+                        .textStyle(.caption).foregroundStyle(Tok.fgMuted)
+                }
+                Spacer(minLength: 0)
+                if updater.phase == .available {
+                    Button("Update") { Task { await updater.install() } }
+                        .buttonStyle(.crate(.primary, size: .xs))
+                        .help("Downloads the new version, replaces this copy and reopens Crate. Your library, downloads and settings stay.")
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .padding(10)
+            .background(Tok.surface, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .hairline(Radius.card)
+            .padding(.bottom, 8)
+            .transition(.opacity)
+        default:
+            EmptyView()
+        }
+    }
+}
+
 struct AccountRow: View {
     @Environment(AppModel.self) private var app
 
@@ -275,7 +313,7 @@ struct AccountRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .help(app.account?.url.absoluteString ?? "")
+        .help(app.displayHost)
     }
 
     private var statusColor: Color {
@@ -288,7 +326,7 @@ struct AccountRow: View {
 
     private var statusText: String {
         switch app.connectivity {
-        case .online: app.account?.displayHost ?? ""
+        case .online: app.displayHost
         case .offline: "Offline"
         case .checking: "Connecting…"
         }

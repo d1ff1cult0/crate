@@ -179,6 +179,7 @@ final class AppModel {
     let nav = Navigator()
     let toasts = ToastCenter()
     let artwork = ArtworkPrefetcher()
+    let updater = Updater()
     @ObservationIgnored let lyrics: LyricsStore
     @ObservationIgnored let resolver: TrackResolver
     @ObservationIgnored let autoplay: AutoplayEngine
@@ -189,6 +190,12 @@ final class AppModel {
     @ObservationIgnored private var periodicTask: Task<Void, Never>?
 
     var isOffline: Bool { connectivity == .offline }
+
+    /// The server shown in the UI. `CRATE_DISPLAY_HOST` replaces it, so README screenshots
+    /// don't publish a real server address.
+    var displayHost: String {
+        ProcessInfo.processInfo.environment["CRATE_DISPLAY_HOST"] ?? account?.displayHost ?? ""
+    }
 
     init() {
         resolver = TrackResolver(library: library)
@@ -229,7 +236,7 @@ final class AppModel {
             activate(SubsonicClient(account: ServerAccount(url: url, username: user), password: password))
             return
         }
-        if let saved = settings.savedAccount, let password = Keychain.get("password:\(saved.key)") {
+        if let saved = settings.savedAccount, let password = Secrets.get("password:\(saved.key)") {
             activate(SubsonicClient(account: saved, password: password))
         } else {
             phase = .loggedOut
@@ -251,7 +258,7 @@ final class AppModel {
         let client = SubsonicClient(account: account, password: password)
         try await client.ping()
         settings.savedAccount = account
-        Keychain.set(password, for: "password:\(account.key)")
+        Secrets.set(password, for: "password:\(account.key)")
         activate(client)
     }
 
@@ -262,8 +269,7 @@ final class AppModel {
         fetcher.configure(client: client)
         downloads.attach(account: client.account)
         mixes.loadCached()
-        player.persistenceURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crate/Accounts/\(client.account.key)/queue.json")
+        player.persistenceURL = AppPaths.account(client.account.key).appendingPathComponent("queue.json")
         player.restore()
         nav.reset()
         phase = .ready
@@ -274,6 +280,10 @@ final class AppModel {
                 mixes.refreshIfStale()
                 await downloads.refreshAll()
             }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(8))
+            if settings.checkForUpdates { await updater.check() }
         }
         startPeriodicWork()
     }
@@ -287,7 +297,7 @@ final class AppModel {
     func logout() {
         artwork.cancel()
         player.reset()
-        if let account { Keychain.set(nil, for: "password:\(account.key)") }
+        if let account { Secrets.set(nil, for: "password:\(account.key)") }
         settings.savedAccount = nil
         library.detach()
         downloads.detach()
@@ -346,6 +356,9 @@ final class AppModel {
                 guard connectivity == .online, phase == .ready else { continue }
                 await library.sync()
                 mixes.refreshIfStale()
+                if settings.checkForUpdates, Date().timeIntervalSince(updater.lastCheck ?? .distantPast) > 6 * 3600 {
+                    await updater.check()
+                }
             }
         }
     }
@@ -355,7 +368,7 @@ final class AppModel {
     /// `crate://` links for launchers and scripting, e.g. `crate://playlist/<id>`,
     /// `crate://play/album/<id>`, `crate://control/next`, `crate://go/discover`.
     func handle(_ url: URL) {
-        guard url.scheme == "crate", phase == .ready else { return }
+        guard url.scheme == AppPaths.urlScheme, phase == .ready else { return }
         let parts = url.pathComponents.filter { $0 != "/" }.map { $0.removingPercentEncoding ?? $0 }
         let first = parts.first ?? ""
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value ?? ""
@@ -373,6 +386,8 @@ final class AppModel {
         case "palette":
             paletteQuery = query
             showPalette = true
+        case "debug":
+            if first == "scroll" { ScrollBenchmark.run() }
         case "queue": showQueue.toggle()
         case "lyrics": showLyrics.toggle()
         case "pin": library.togglePin(first)

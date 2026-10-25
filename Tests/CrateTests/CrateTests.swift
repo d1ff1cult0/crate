@@ -133,3 +133,14 @@ struct DecodingTests {
         #expect(payload.error?.code == 40)
     }
 }
+
+@Suite("updates")
+struct UpdaterTests {
+    @Test func comparesVersionsNumerically() {
+        #expect(Updater.isVersion("1.1.0", newerThan: "1.0.0"))
+        #expect(Updater.isVersion("1.10.0", newerThan: "1.9.2"))
+        #expect(Updater.isVersion("2", newerThan: "1.9.9"))
+        #expect(!Updater.isVersion("1.0.0", newerThan: "1.0"))
+        #expect(!Updater.isVersion("1.0.9", newerThan: "1.1.0"))
+    }
+}
