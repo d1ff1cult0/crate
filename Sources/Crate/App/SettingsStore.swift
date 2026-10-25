@@ -34,7 +34,7 @@ enum DiscoveryLevel: Int, CaseIterable, Identifiable {
     }
 }
 
-/// User preferences backed by UserDefaults; secrets go to the keychain.
+/// User preferences backed by UserDefaults; secrets go to `Secrets`.
 @MainActor
 @Observable
 final class SettingsStore {
@@ -54,6 +54,7 @@ final class SettingsStore {
     var showExternalInSearch: Bool { didSet { defaults.set(showExternalInSearch, forKey: "showExternalInSearch") } }
     var compactRows: Bool { didSet { defaults.set(compactRows, forKey: "compactRows") } }
     var cacheAllArtwork: Bool { didSet { defaults.set(cacheAllArtwork, forKey: "cacheAllArtwork") } }
+    var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: "checkForUpdates") } }
     var volume: Double { didSet { defaults.set(volume, forKey: "volume") } }
     var sidebarWidth: Double { didSet { defaults.set(sidebarWidth, forKey: "sidebarWidth") } }
     var queueWidth: Double { didSet { defaults.set(queueWidth, forKey: "queueWidth") } }
@@ -64,18 +65,18 @@ final class SettingsStore {
     static let defaultQueueWidth: Double = 360
 
     var listenBrainzToken: String {
-        didSet { Keychain.set(listenBrainzToken, for: "listenbrainz-token") }
+        didSet { Secrets.set(listenBrainzToken, for: "listenbrainz-token") }
     }
 
     var lastFMKey: String {
-        didSet { Keychain.set(lastFMKey, for: "lastfm-api-key") }
+        didSet { Secrets.set(lastFMKey, for: "lastfm-api-key") }
     }
 
     init() {
         defaults.register(defaults: [
             "autoplay": true, "discovery": DiscoveryLevel.balanced.rawValue, "autoplayExternal": false,
             "prefetchExternal": true, "scrobble": true, "showExternalInSearch": true, "volume": 0.8,
-            "streamQuality": 0, "downloadQuality": 0, "sidebarWidth": 248.0, "queueWidth": 360.0, "cacheAllArtwork": true,
+            "streamQuality": 0, "downloadQuality": 0, "sidebarWidth": 248.0, "queueWidth": 360.0, "cacheAllArtwork": true, "checkForUpdates": true,
         ])
         appearance = AppearanceMode(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system
         streamQuality = StreamQuality(rawValue: defaults.integer(forKey: "streamQuality")) ?? .original
@@ -91,11 +92,12 @@ final class SettingsStore {
         showExternalInSearch = defaults.bool(forKey: "showExternalInSearch")
         compactRows = defaults.bool(forKey: "compactRows")
         cacheAllArtwork = defaults.bool(forKey: "cacheAllArtwork")
+        checkForUpdates = defaults.bool(forKey: "checkForUpdates")
         volume = defaults.double(forKey: "volume")
         sidebarWidth = min(max(defaults.double(forKey: "sidebarWidth"), Self.sidebarRange.lowerBound), Self.sidebarRange.upperBound)
         queueWidth = min(max(defaults.double(forKey: "queueWidth"), Self.queueRange.lowerBound), Self.queueRange.upperBound)
-        listenBrainzToken = Keychain.get("listenbrainz-token") ?? ""
-        lastFMKey = Keychain.get("lastfm-api-key") ?? ""
+        listenBrainzToken = Secrets.get("listenbrainz-token") ?? ""
+        lastFMKey = Secrets.get("lastfm-api-key") ?? ""
     }
 
     func applyAppearance() {

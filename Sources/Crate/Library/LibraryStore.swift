@@ -54,8 +54,7 @@ final class LibraryStore {
 
     func attach(client: SubsonicClient) {
         self.client = client
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crate/Accounts/\(client.account.key)", isDirectory: true)
+        let dir = AppPaths.account(client.account.key)
         do {
             db = try LibraryDatabase(directory: dir)
         } catch {
