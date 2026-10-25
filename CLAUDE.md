@@ -24,7 +24,12 @@ autoplay. Their specific complaints about Feishin, which are Crate's priorities:
 
 Later requests in the same session (all done): resizable sidebar **and** queue panel, more
 compact search results, fixing the artwork caching feel, **lyrics** like Feishin/Spotify,
-and "push to main without giving yourself credit".
+"push to main without giving yourself credit" (in several commits, not one). After the
+user installed 1.0.0: smooth scrolling in mixes (it was laggy), a purple dot instead of the
+"Deezer" pill, a README like Dopl's with screenshots, **no reinstalling for updates**
+(in-app updater, 1.1.0) and **never re-entering credentials or API keys** after an update.
+The user also asked that their installed `/Applications/Crate.app` be updated when work
+is done (`scripts/install.sh`). The user writes in English and sometimes in Dutch.
 
 ## Hard rules
 
@@ -60,21 +65,38 @@ and "push to main without giving yourself credit".
   `_Testing_Foundation` overlay, whose module layout is broken in this CLT. Foundation
   types are visible through `@testable import Crate`. Test helpers that touch decoding go
   through `SubsonicClient.decodePayload`.
-- `make run | app | dmg | test | icon | clean`.
+- `make run | dev | app | install | dmg | release | test | icon | clean`.
 
 ## Running and inspecting the app during development
 
+- **The user runs the real app (`/Applications/Crate.app`) all day. Never test with it.**
+  Use the dev variant: `VARIANT=dev UNIVERSAL=0 scripts/build-app.sh` (or `make dev`) builds
+  `dist/Crate Dev.app` with bundle id `com.jplessers.crate.dev`, its own folders
+  (`~/Library/Application Support/Crate Dev`, `~/Library/Caches/Crate Dev`), its own
+  defaults domain, secrets and URL scheme **`crate-dev://`** (`AppPaths`). Updates are off
+  in dev builds.
+- Seed the dev variant from the user's cache instead of a full re-sync:
+  `sqlite3 "<Crate>/Accounts/<acct>/library.sqlite" ".backup '<Crate Dev>/Accounts/<acct>/library.sqlite'"`
+  (consistent copy of a live WAL database) and `cp -cR` the artwork folder (an APFS clone,
+  so no extra disk space). Set `defaults write com.jplessers.crate.dev cacheAllArtwork -bool false`
+  and `volume -float 0`.
 - A bare `.build/debug/Crate` launched from a shell creates its window off-screen. Always
   build the bundle and launch it with `open`.
-- Test credentials without touching the keychain:
-  `open -n --env CRATE_SERVER=<host> --env CRATE_USER=<u> --env CRATE_PASSWORD=<p> dist/Crate.app`
-  (`AppModel.launch()` checks these first).
-- Mute before playback tests: `defaults write com.jplessers.crate volume -float 0`. The user
-  may be at the machine, so set it back to `0.8` afterwards.
-- Drive the UI with the **`crate://` URL scheme** (`AppModel.handle(_:)`): `go/<section>`,
+- Test credentials without touching stored secrets:
+  `open -n "dist/Crate Dev.app" --env CRATE_SERVER=<host> --env CRATE_USER=<u> --env CRATE_PASSWORD=<p>`
+  (`AppModel.launch()` checks these first). `--env CRATE_DISPLAY_HOST=music.example.com`
+  masks the server address in the UI, which is how the README screenshots were taken.
+- Drive the UI with the **URL scheme** (`crate-dev://` for the dev build, `AppModel.handle(_:)`): `go/<section>`,
   `album|artist|playlist|genre|mix/<id>`, `search?q=`, `palette?q=`, `play/album|playlist|mix|song|radio/<id>`,
   `control/toggle|next|previous|shuffle`, `queue`, `lyrics`, `pin/<playlistId>`,
-  `offline/playlist/<id>`, `offline/favourites`, `theme/light|dark|system`.
+  `offline/playlist/<id>`, `offline/favourites`, `theme/light|dark|system`, and in dev builds
+  `debug/scroll` (below).
+- **Measuring smoothness:** `crate-dev://debug/scroll` (`ScrollBenchmark`, dev only) scrolls
+  the current page's largest scroll view at 120 Hz and writes frame pacing to
+  `~/Library/Caches/Crate Dev/scroll-benchmark.txt` (healthy: mean ≈ 8.3 ms, no frames
+  > 25 ms). Run `sample <pid> 4 -file out.txt` at the same time to see main-thread hot spots.
+  Posting scroll events with `CGEvent.postToPid` does not reach the window; don't bother.
+  Check idle CPU while playing too (`ps -o %cpu= -p <pid>`); it should be a few percent.
 - Screenshots: get the window id from `CGWindowListCopyWindowInfo` (owner "Crate", layer 0,
   on-screen), then `screencapture -x -o -l <id> out.png`. If the user hides the window or
   switches Space, capture fails. Don't keep stealing focus.
@@ -92,10 +114,36 @@ and "push to main without giving yourself credit".
 | Artwork cache | `~/Library/Caches/Crate/Artwork/<user@host>/` (`<coverArt>@<px>.img`) |
 | octo-fiesta fetched songs | `~/Library/Caches/Crate/Remote/<user@host>/` (capped at 3 GB, LRU) |
 | Preferences | `UserDefaults` domain `com.jplessers.crate` |
-| Secrets | Keychain service `com.jplessers.crate`: `password:<user@host>`, `listenbrainz-token`, `lastfm-api-key` |
+| Secrets | `~/Library/Application Support/Crate/secrets.bin` (AES-GCM, key from the hardware UUID + bundle id, 0600): `password:<user@host>`, `listenbrainz-token`, `lastfm-api-key` |
 
-Bundle id `com.jplessers.crate`. Each rebuild changes the ad-hoc signature, so macOS asks
-once to allow keychain access. That's expected.
+## Secrets and the keychain (important)
+
+Crate is ad-hoc signed (no Apple Developer ID). macOS ties keychain items to the **exact
+code hash** of the app that created them (`partition_id: cdhash:…` in
+`security dump-keychain -a`), so every new build gets a "Crate wants to use your
+confidential information" prompt for every item. A self-signed certificate doesn't help:
+without a team ID the partition is still the cdhash. So since 1.1.0, `Secrets` keeps them
+in an encrypted file instead, and only reads the 1.0 keychain items once to migrate them
+(one prompt per item, one time).
+
+**Never probe the user's keychain from a test binary.** `kSecUseAuthenticationUIFail` does
+not suppress these legacy ACL prompts: the dialogs appear on the user's screen, and if they
+click "Always Allow" the test binary ends up in the item's access list. This happened once
+in this project; the user was told and the binaries were deleted.
+
+## Updates and releases
+
+- `Updater` checks `api.github.com/repos/d1ff1cult0/crate/releases/latest` at launch (after
+  8 s) and every 6 h when "Check for updates automatically" is on. It downloads the release
+  `.zip`, unzips it with `ditto`, checks the bundle id, swaps the bundle (keeping a backup
+  until the move succeeds) and relaunches through `/bin/sh` once the old process has
+  exited. A card above Settings in the sidebar offers the update; Settings → Updates shows
+  the status.
+- To ship: bump `VERSION`, commit, push, run `scripts/release.sh` (builds a universal app,
+  `ditto -c -k --keepParent` zip and DMG, then `gh release create v<VERSION>`). `gh` is
+  logged in as d1ff1cult0 and the repo is public, so the unauthenticated API check works.
+- `scripts/install.sh` (`make install`) puts `dist/Crate.app` into `/Applications`, quitting
+  and reopening a running copy. Everything the user set up lives outside the bundle.
 
 ## Architecture
 
@@ -103,7 +151,8 @@ once to allow keychain access. That's expected.
 Sources/Crate/
   App/        CrateApp (Window scene, menus, Dock menu, key monitor, dialogs, WindowDragArea,
               ResizeHandle), AppModel (session, connectivity, URL scheme, Navigator, toasts),
-              SettingsStore (UserDefaults + Keychain), Keychain
+              SettingsStore (UserDefaults), Secrets (encrypted file + 1.0 keychain migration),
+              AppPaths (release vs dev folders), Updater (GitHub releases), ScrollBenchmark (dev)
   Design/     Tokens (Dopl colours, light + dark), Typography (Inter with cv11/ss01/tnum,
               Outfit wordmark), Components (buttons, fields, pills, Artwork, StarRating,
               CrateMark…)
@@ -133,6 +182,17 @@ Sources/Crate/
   - Lists are `LazyVStack`/`LazyVGrid` with fixed-height rows. Big collections (Songs,
     Albums, Artists, genre songs) page from SQLite.
   - All DB writes during sync run off the main thread (`LibraryStore.background`).
+  - **No redraw storms.** Anything rows observe must change rarely: `RemoteFetcher.active`
+    is a Set (no per-chunk progress), download progress is published in 10% steps,
+    `MixStore.resolve` publishes every 16 lookups and writes to SQLite once at the end. The
+    1.0 lag in Weekly Exploration came from exactly these: every visible row redrew on each
+    progress tick.
+  - Rows only build hover controls (play, stars, heart, "…" menu) while hovered or when they
+    carry a value. `RemoteFetcher.cachedFile` is a dictionary lookup (use `validFile` right
+    before playback); `ImageCache.diskImageSync` remembers covers that aren't on disk.
+  - **Continuous animation goes through Core Animation**, not SwiftUI: `NowPlayingBars` is
+    an `NSViewRepresentable` with CALayer animations. The SwiftUI `TimelineView` version kept
+    the view graph busy 24×/s and the app at ~35% CPU while playing; now it's ~2.5%.
   - **`TrackRows` returns a header plus a `ForEach`**, so modifiers on it apply to every
     row. Put spacing in a separate view (`Color.clear.frame(height:)`), never
     `.padding(.bottom)` on `TrackRows` (that bug made search rows 120 pt apart).
@@ -236,15 +296,23 @@ Sources/Crate/
 - Sentence case everywhere, empty/loading (skeleton)/error states on every page.
   Destructive actions confirm.
 
+## README screenshots
+
+`docs/screenshots/*.png` were captured from the dev build (light and dark via
+`crate-dev://theme/…`, server masked with `CRATE_DISPLAY_HOST`, a few playlists pinned in
+the dev copy only), with `screencapture -x -o -l <windowid>`, then `sips -Z 1800`. Don't
+show the real server address or anything from the user's private data beyond what's already
+visible in their library.
+
 ## Testing notes from the session
 
 - Verified against the real server: full sync, playlists/pins, album/artist/genre/search
   pages, playback and gapless queue, octo-fiesta fetch path (fetching state → plays),
   autoplay picks, synced lyrics from LRCLIB, offline download + removal, artwork
   prefetch (~13 covers/s), light and dark mode, ⌘K palette.
-- Not exercised end to end: a Last.fm or ListenBrainz account (the user hasn't given their
-  user names; the APIs were checked with a public LB user), real offline mode (network
-  down), drag-resizing by mouse (rendering only).
+- Not exercised end to end: real offline mode (network down) and drag-resizing by mouse
+  (rendering only). The user has since connected ListenBrainz and Last.fm in their own app,
+  and the mixes are in their cache.
 
 ## Ideas not done yet
 
