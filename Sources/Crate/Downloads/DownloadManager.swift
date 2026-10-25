@@ -14,7 +14,10 @@ final class DownloadManager {
     private(set) var sets: [OfflineSet] = []
     private(set) var downloaded: [String: URL] = [:]
     private(set) var progress: [String: Double] = [:]
-    private(set) var queue: [Track] = []
+    private(set) var queue: [Track] = [] {
+        didSet { queuedIds = Set(queue.map(\.id)) }
+    }
+    @ObservationIgnored private var queuedIds: Set<String> = []
     private(set) var failures: Set<String> = []
     private(set) var totalBytes: Int64 = 0
     private(set) var isRefreshing = false
@@ -32,8 +35,7 @@ final class DownloadManager {
     }
 
     func attach(account: ServerAccount) {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crate/Offline/\(account.key)", isDirectory: true)
+        let dir = AppPaths.offline(account.key)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         directory = dir
         reload()
@@ -87,7 +89,7 @@ final class DownloadManager {
     func state(for trackId: String) -> ItemState {
         if downloaded[trackId] != nil { return .done }
         if let p = progress[trackId] { return .downloading(p) }
-        if queue.contains(where: { $0.id == trackId }) { return .queued }
+        if queuedIds.contains(trackId) { return .queued }
         if failures.contains(trackId) { return .failed }
         return .none
     }
@@ -212,7 +214,7 @@ final class DownloadManager {
     // MARK: Workers
 
     private func enqueue(_ tracks: [Track]) {
-        for track in tracks where downloaded[track.id] == nil && progress[track.id] == nil && !queue.contains(where: { $0.id == track.id }) {
+        for track in tracks where downloaded[track.id] == nil && progress[track.id] == nil && !queuedIds.contains(track.id) {
             if let local = localURL(for: track.id), local.isFileURL { continue }
             queue.append(track)
         }
@@ -250,7 +252,10 @@ final class DownloadManager {
         do {
             let (file, mime) = try await client.fetchFile(from: source, to: partial) { fraction in
                 Task { @MainActor [weak self] in
-                    if self?.progress[id] != nil { self?.progress[id] = fraction }
+                    // Every published change redraws the rows showing download state, so
+                    // only publish in 10% steps.
+                    guard let self, let current = self.progress[id], fraction - current >= 0.1 || fraction >= 1 else { return }
+                    self.progress[id] = fraction
                 }
             }
             let ext = quality == .original || track.isExternal ? AudioFileType.fileExtension(mime: mime, fallback: track.suffix) : "mp3"

@@ -123,15 +123,19 @@ struct TrackRow: View {
         let playable = app.isPlayable(track)
         let rowHeight = options.artwork ? (app.settings.compactRows ? 44 : Metrics.rowHeight) : 42
 
+        // Kept deliberately light: rows are created and recycled constantly while
+        // scrolling, so controls that only matter under the pointer (play, rating, heart,
+        // "…" menu) exist only while hovered or when they carry a value.
         HStack(spacing: 12) {
             ZStack {
                 if isCurrent {
                     NowPlayingBars(animating: app.player.isPlaying, height: 12)
                 } else if hovering, playable {
-                    Button(action: onPlay) {
-                        Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(Tok.fg)
-                    }
-                    .buttonStyle(.plain)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tok.fg)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: onPlay)
                 } else {
                     Text(numberText)
                         .textStyle(.small, tabular: true)
@@ -150,57 +154,66 @@ struct TrackRow: View {
                         .textStyle(.bodyStrong)
                         .foregroundStyle(isCurrent ? Tok.accentText : Tok.fg)
                         .lineLimit(1)
-                    if track.isExternal { ExternalPill(provider: track.provider) }
+                    if track.isExternal { ExternalDot(provider: track.provider) }
                 }
                 if options.artwork || !options.trackNumbers || track.artist != track.albumArtist {
-                    Button {
-                        app.openArtist(track)
-                    } label: {
-                        Text(track.artist).textStyle(.small).foregroundStyle(Tok.fgMuted).lineLimit(1)
-                    }
-                    .buttonStyle(.plain)
+                    Text(track.artist)
+                        .textStyle(.small)
+                        .foregroundStyle(hovering ? Tok.fgSecondary : Tok.fgMuted)
+                        .lineLimit(1)
+                        .onTapGesture { app.openArtist(track) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if options.album {
-                Button {
-                    app.openAlbum(track.albumId)
-                } label: {
-                    Text(track.album).textStyle(.small).foregroundStyle(Tok.fgMuted).lineLimit(1)
-                        .frame(maxWidth: 240, alignment: .leading)
-                }
-                .buttonStyle(.plain)
+                Text(track.album)
+                    .textStyle(.small)
+                    .foregroundStyle(hovering ? Tok.fgSecondary : Tok.fgMuted)
+                    .lineLimit(1)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .onTapGesture { app.openAlbum(track.albumId) }
             }
 
             DownloadIndicator(track: track)
                 .frame(width: 18)
 
-            StarRating(rating: rating, size: 10.5, showEmpty: hovering) { app.library.setRating(track, $0) }
-                .frame(width: 84, alignment: .leading)
+            ZStack(alignment: .leading) {
+                if hovering || rating > 0 {
+                    StarRating(rating: rating, size: 10.5, showEmpty: hovering) { app.library.setRating(track, $0) }
+                }
+            }
+            .frame(width: 84, alignment: .leading)
 
-            HeartButton(isOn: starred, size: 12, visibleWhenOff: hovering) { app.library.toggleStar(track) }
-                .frame(width: 26)
+            ZStack {
+                if hovering || starred {
+                    HeartButton(isOn: starred, size: 12) { app.library.toggleStar(track) }
+                }
+            }
+            .frame(width: 26)
 
             Text(track.durationText)
                 .textStyle(.small, tabular: true)
                 .foregroundStyle(Tok.fgMuted)
                 .frame(width: 46, alignment: .trailing)
 
-            Menu {
-                menu()
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Tok.icon)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
+            ZStack {
+                if hovering {
+                    Menu {
+                        menu()
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Tok.icon)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                }
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
             .frame(width: 24)
-            .opacity(hovering ? 1 : 0)
         }
         .padding(.horizontal, 12)
         .frame(height: rowHeight)

@@ -90,12 +90,13 @@ final class MixStore {
         list.sorted { (Self.order.firstIndex(of: $0.id) ?? 99) < (Self.order.firstIndex(of: $1.id) ?? 99) }
     }
 
-    private func save(_ mix: Mix) {
+    private func save(_ mix: Mix, persist: Bool = true) {
         if let index = mixes.firstIndex(where: { $0.id == mix.id }) {
-            mixes[index] = mix
+            if mixes[index] != mix { mixes[index] = mix }
         } else {
             mixes = sort(mixes + [mix])
         }
+        guard persist else { return }
         if let data = try? JSONEncoder().encode(mix) {
             library.db?.saveMix(id: mix.id, payload: data)
         }
@@ -311,8 +312,11 @@ final class MixStore {
                 mix.entries[i].state = .library
             }
         }
-        save(mix)
         let remaining = pending.filter { mix.entries[$0].state == .pending }
+        save(mix, persist: remaining.isEmpty)
+        // Every publish redraws the open mix page, so results go out every 16 lookups
+        // (and once at the end) rather than after each batch of 4.
+        var sincePublish = 0
         for chunk in stride(from: 0, to: remaining.count, by: 4) {
             let slice = Array(remaining[chunk..<min(chunk + 4, remaining.count)])
             let lookups = slice.map { (index: $0, title: mix.entries[$0].title, artist: mix.entries[$0].artist) }
@@ -327,7 +331,10 @@ final class MixStore {
                 for await result in group { collected.append(result) }
                 return collected
             }
-            guard var latest = self.mix(id: mixId) else { return }
+            // Build on the local copy (the store is only updated every few batches), and
+            // stop if the mix was replaced by a newer week's in the meantime.
+            guard self.mix(id: mixId)?.version == mix.version else { return }
+            var latest = mix
             for (index, track) in results where latest.entries.indices.contains(index) {
                 if var track {
                     if track.artworkURL == nil { track.artworkURL = latest.entries[index].artworkURL }
@@ -337,8 +344,13 @@ final class MixStore {
                     latest.entries[index].state = .missing
                 }
             }
-            save(latest)
             mix = latest
+            sincePublish += slice.count
+            let done = chunk + 4 >= remaining.count
+            if sincePublish >= 16 || done {
+                save(latest, persist: done)
+                sincePublish = 0
+            }
         }
     }
 

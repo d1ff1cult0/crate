@@ -148,7 +148,10 @@ struct AlbumDetailView: View {
             ),
             meta: [album.year.flatMap { $0 > 0 ? String($0) : nil }, album.genre, Format.count(count, "song"), Format.longDuration(duration)]
                 .compactMap { $0 }.joined(separator: " · "),
-            pills: album.isExternal ? AnyView(ExternalPill(provider: OctoID.providerName(album.id))) : nil,
+            pills: album.isExternal ? AnyView(HStack(spacing: 5) {
+                ExternalDot(provider: OctoID.providerName(album.id))
+                Text("From \(OctoID.providerName(album.id) ?? "a provider")").textStyle(.caption).foregroundStyle(Tok.fgMuted)
+            }) : nil,
             cover: { Artwork(coverArt: album.coverArt, size: 200, radius: Radius.card) },
             actions: {
                 Button {

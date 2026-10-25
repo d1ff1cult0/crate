@@ -37,7 +37,7 @@ private struct NowPlayingInfo: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(track.title).textStyle(.bodyStrong).foregroundStyle(Tok.fg).lineLimit(1)
-                        if track.isExternal { ExternalPill(provider: track.provider).scaleEffect(0.9) }
+                        if track.isExternal { ExternalDot(provider: track.provider) }
                     }
                     Button {
                         app.openArtist(track)

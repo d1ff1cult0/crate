@@ -17,6 +17,9 @@ final class ImageCache: @unchecked Sendable {
     private let memory = NSCache<NSString, NSImage>()
     private let lock = NSLock()
     private var inFlight: [String: Task<NSImage?, Never>] = [:]
+    /// Covers known not to be on disk yet (keyed by `keyFor(0)`), so the synchronous
+    /// thumbnail path costs a set lookup instead of file reads on every view init.
+    private var notOnDisk: Set<String> = []
     private var client: SubsonicClient?
     private var directoryStorage: URL
     private let session: URLSession
@@ -25,8 +28,7 @@ final class ImageCache: @unchecked Sendable {
 
     private init() {
         memory.totalCostLimit = 384 * 1024 * 1024
-        directoryStorage = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crate/Artwork", isDirectory: true)
+        directoryStorage = AppPaths.artworkRoot
         let config = URLSessionConfiguration.default
         config.urlCache = nil
         config.timeoutIntervalForRequest = 30
@@ -39,8 +41,7 @@ final class ImageCache: @unchecked Sendable {
         lock.withLock {
             self.client = client
             if let client {
-                directoryStorage = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("Crate/Artwork/\(client.account.key)", isDirectory: true)
+                directoryStorage = AppPaths.artwork(client.account.key)
                 try? FileManager.default.createDirectory(at: directoryStorage, withIntermediateDirectories: true)
             }
         }
@@ -83,14 +84,20 @@ final class ImageCache: @unchecked Sendable {
     func diskImageSync(coverArt: String?, url: URL?, points: CGFloat) -> NSImage? {
         let size = Self.bucket(for: points)
         guard size <= 160, let keyFor = keyBuilder(coverArt: coverArt, url: url) else { return nil }
-        guard let image = loadFromDisk(keyFor: keyFor, size: size) else { return nil }
+        let base = keyFor(0)
+        if lock.withLock({ notOnDisk.contains(base) }) { return nil }
+        // Only the exact size and the prefetch size: those are the files that exist.
+        guard let image = loadFromDisk(keyFor: keyFor, size: size, candidates: [size, Self.prefetchSize]) else {
+            lock.withLock { _ = notOnDisk.insert(base) }
+            return nil
+        }
         memory.setObject(image, forKey: keyFor(size) as NSString, cost: size * size * 4)
         return image
     }
 
     /// The exact bucket, or any larger one already on disk (scaled down on decode).
-    private func loadFromDisk(keyFor: (Int) -> String, size: Int) -> NSImage? {
-        for bucket in [size] + Self.buckets.filter({ $0 > size }) {
+    private func loadFromDisk(keyFor: (Int) -> String, size: Int, candidates: [Int]? = nil) -> NSImage? {
+        for bucket in candidates ?? ([size] + Self.buckets.filter({ $0 > size })) {
             let file = fileURL(for: keyFor(bucket))
             if let data = try? Data(contentsOf: file), let image = Self.decode(data, maxPixels: size) {
                 return image
@@ -118,6 +125,7 @@ final class ImageCache: @unchecked Sendable {
                 guard let remote, let data = await Self.download(remote, session: session),
                       let image = Self.decode(data, maxPixels: size) else { return nil }
                 try? data.write(to: file, options: .atomic)
+                lock.withLock { _ = notOnDisk.remove(keyFor(0)) }
                 return image
             }
             inFlight[cacheKey] = task
@@ -142,7 +150,9 @@ final class ImageCache: @unchecked Sendable {
         if isOnDisk(coverArt: coverArt, size: size) { return true }
         guard let remote = lock.withLock({ client?.coverArtURL(id: coverArt, size: size) }),
               let data = await Self.download(remote, session: session) else { return false }
-        return (try? data.write(to: fileURL(for: key(coverArt: coverArt, size: size)), options: .atomic)) != nil
+        let written = (try? data.write(to: fileURL(for: key(coverArt: coverArt, size: size)), options: .atomic)) != nil
+        if written { lock.withLock { _ = notOnDisk.remove(key(coverArt: coverArt, size: 0)) } }
+        return written
     }
 
     private static func download(_ url: URL, session: URLSession) async -> Data? {
@@ -167,8 +177,7 @@ final class ImageCache: @unchecked Sendable {
     // MARK: Housekeeping
 
     var diskUsage: Int64 {
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Crate/Artwork")
-        return Self.directorySize(root)
+        Self.directorySize(AppPaths.artworkRoot)
     }
 
     var fileCount: Int {
@@ -177,8 +186,7 @@ final class ImageCache: @unchecked Sendable {
 
     func clear() {
         memory.removeAllObjects()
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Crate/Artwork")
-        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: AppPaths.artworkRoot)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 

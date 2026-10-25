@@ -425,7 +425,7 @@ final class PlayerController {
             if let mapped = library?.db?.localId(forExternal: track.id), !isOffline() {
                 return streamURL(client: client, id: mapped, item: item)
             }
-            if let cached = fetcher?.cachedFile(for: track.id) { return cached }
+            if let cached = fetcher?.validFile(for: track.id) { return cached }
             if isOffline() { throw CrateError.offline }
             if foreground { status = .fetching(track.provider ?? "provider") }
             guard let fetcher else { throw CrateError.notConnected }

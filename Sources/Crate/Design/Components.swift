@@ -304,12 +304,17 @@ struct Pill: View {
     }
 }
 
-/// Marks songs and albums that come from a provider through octo-fiesta.
-struct ExternalPill: View {
+/// Marks songs and albums that come from a provider through octo-fiesta: a small purple
+/// dot, explained in its tooltip.
+struct ExternalDot: View {
     let provider: String?
+    var size: CGFloat = 7
+
     var body: some View {
-        Pill(text: provider ?? "External", hue: .purple, symbol: "arrow.down.forward")
-            .help("Not in your library yet. octo-fiesta fetches it from \(provider ?? "the provider") when you play it.")
+        Circle()
+            .fill(TagHue.purple.solid)
+            .frame(width: size, height: size)
+            .help("Not in your library yet. octo-fiesta fetches it from \(provider ?? "the provider") when it plays.")
     }
 }
 
@@ -650,25 +655,83 @@ struct HeartButton: View {
     }
 }
 
-/// Three bars that move while a song plays (static when paused).
-struct NowPlayingBars: View {
+/// Three bars that move while a song plays (static when paused). Animated with Core
+/// Animation, which runs in the render server: a SwiftUI animation here would re-render
+/// the view graph every frame for as long as music plays.
+struct NowPlayingBars: NSViewRepresentable {
     var animating: Bool
     var color: Color = Tok.accent
     var height: CGFloat = 12
 
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 24, paused: !animating)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(0..<3, id: \.self) { i in
-                    let phase = t * (3.2 + Double(i) * 1.1) + Double(i) * 1.7
-                    let level = animating ? 0.35 + 0.65 * abs(sin(phase)) : [0.5, 0.8, 0.4][i]
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(color)
-                        .frame(width: 2.5, height: max(2, height * level))
+    func makeNSView(context: Context) -> BarsView {
+        BarsView(height: height)
+    }
+
+    func updateNSView(_ view: BarsView, context: Context) {
+        view.color = NSColor(color)
+        view.setAnimating(animating)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: BarsView, context: Context) -> CGSize? {
+        CGSize(width: 3 * 2.5 + 2 * 2, height: height)
+    }
+
+    final class BarsView: NSView {
+        private let bars = (0..<3).map { _ in CALayer() }
+        private let barHeight: CGFloat
+        private var animating = false
+        var color: NSColor = .controlAccentColor {
+            didSet { applyColor() }
+        }
+
+        init(height: CGFloat) {
+            barHeight = height
+            super.init(frame: NSRect(x: 0, y: 0, width: 11.5, height: height))
+            wantsLayer = true
+            for (i, bar) in bars.enumerated() {
+                bar.anchorPoint = CGPoint(x: 0.5, y: 0)
+                bar.cornerRadius = 1
+                bar.frame = CGRect(x: CGFloat(i) * 4.5, y: 0, width: 2.5, height: height)
+                bar.transform = CATransform3DMakeScale(1, [0.5, 0.8, 0.4][i], 1)
+                layer?.addSublayer(bar)
+            }
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override var intrinsicContentSize: NSSize { NSSize(width: 11.5, height: barHeight) }
+        override var isFlipped: Bool { false }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            applyColor()
+        }
+
+        private func applyColor() {
+            var cg = color.cgColor
+            effectiveAppearance.performAsCurrentDrawingAppearance { cg = self.color.cgColor }
+            bars.forEach { $0.backgroundColor = cg }
+        }
+
+        func setAnimating(_ on: Bool) {
+            guard on != animating || bars.first?.animation(forKey: "level") == nil && on else { return }
+            animating = on
+            for (i, bar) in bars.enumerated() {
+                if on {
+                    let animation = CABasicAnimation(keyPath: "transform.scale.y")
+                    animation.fromValue = 0.3
+                    animation.toValue = 1.0
+                    animation.duration = [0.45, 0.6, 0.38][i]
+                    animation.autoreverses = true
+                    animation.repeatCount = .infinity
+                    animation.timeOffset = [0.1, 0.35, 0.2][i]
+                    animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    bar.add(animation, forKey: "level")
+                } else {
+                    bar.removeAnimation(forKey: "level")
                 }
             }
-            .frame(height: height, alignment: .bottom)
         }
     }
 }

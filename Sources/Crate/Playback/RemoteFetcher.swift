@@ -11,8 +11,10 @@ import Observation
 @MainActor
 @Observable
 final class RemoteFetcher {
-    /// External song id → fetch progress (0…1; octo-fiesta often reports nothing until done).
-    private(set) var active: [String: Double] = [:]
+    /// External songs being fetched right now. Only start and end are published: octo-fiesta
+    /// sends the file in one burst at the end, and per-chunk progress updates would make
+    /// every visible row redraw hundreds of times a second.
+    private(set) var active: Set<String> = []
     private(set) var failed: Set<String> = []
 
     @ObservationIgnored private var tasks: [String: Task<URL, Error>] = [:]
@@ -28,8 +30,7 @@ final class RemoteFetcher {
             directory = nil
             return
         }
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crate/Remote/\(client.account.key)", isDirectory: true)
+        let dir = AppPaths.remote(client.account.key)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         directory = dir
         let contents = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
@@ -42,17 +43,23 @@ final class RemoteFetcher {
         String(id.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" })
     }
 
+    /// The fetched file, from the in-memory index (cheap enough for views to call per row).
     func cachedFile(for id: String) -> URL? {
-        guard let file = files[Self.safeName(id)] else { return nil }
+        files[Self.safeName(id)]
+    }
+
+    /// The fetched file if it's still on disk; used right before playback.
+    func validFile(for id: String) -> URL? {
+        guard let file = cachedFile(for: id) else { return nil }
         if FileManager.default.fileExists(atPath: file.path) { return file }
         files[Self.safeName(id)] = nil
         return nil
     }
 
-    func isFetching(_ id: String) -> Bool { active[id] != nil }
+    func isFetching(_ id: String) -> Bool { active.contains(id) }
 
     func fetch(_ track: Track) async throws -> URL {
-        if let file = cachedFile(for: track.id) {
+        if let file = validFile(for: track.id) {
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
             return file
         }
@@ -64,13 +71,9 @@ final class RemoteFetcher {
         let source = client.streamURL(id: track.id)
         let id = track.id
         failed.remove(id)
-        active[id] = 0
+        active.insert(id)
         let task = Task<URL, Error> {
-            let (file, mime) = try await client.fetchFile(from: source, to: partial) { fraction in
-                Task { @MainActor [weak self] in
-                    if self?.active[id] != nil { self?.active[id] = fraction }
-                }
-            }
+            let (file, mime) = try await client.fetchFile(from: source, to: partial)
             let final = directory.appendingPathComponent(name + "." + AudioFileType.fileExtension(mime: mime, fallback: track.suffix))
             try? FileManager.default.removeItem(at: final)
             try FileManager.default.moveItem(at: file, to: final)
@@ -79,7 +82,7 @@ final class RemoteFetcher {
         tasks[id] = task
         defer {
             tasks[id] = nil
-            active[id] = nil
+            active.remove(id)
         }
         do {
             let url = try await task.value
