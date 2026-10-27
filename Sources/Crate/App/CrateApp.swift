@@ -223,23 +223,52 @@ struct WindowConfigurator: NSViewRepresentable {
 }
 
 /// Moves the window from custom title areas (the title bar is hidden). Double-click zooms,
-/// like a real title bar.
+/// like a real title bar. With `onClick`, a click that doesn't move runs it instead (the
+/// logo goes home) and dragging still moves the window.
 struct WindowDragArea: NSViewRepresentable {
+    var onClick: (() -> Void)?
+
     final class DragView: NSView {
+        var onClick: (() -> Void)?
+
         override var mouseDownCanMoveWindow: Bool { true }
 
+        /// Like a title bar: works on the first click, even while the window is inactive.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 {
+            guard let window else { return }
+            if let onClick {
+                // Wait for the mouse to either move (a drag) or come up (a click).
+                let start = event.locationInWindow
+                while let next = window.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+                    if next.type == .leftMouseUp {
+                        onClick()
+                        return
+                    }
+                    if hypot(next.locationInWindow.x - start.x, next.locationInWindow.y - start.y) > 3 {
+                        window.performDrag(with: event)
+                        return
+                    }
+                }
+            } else if event.clickCount == 2 {
                 let action = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize"
-                if action == "Minimize" { window?.performMiniaturize(nil) } else if action != "None" { window?.performZoom(nil) }
+                if action == "Minimize" { window.performMiniaturize(nil) } else if action != "None" { window.performZoom(nil) }
             } else {
-                window?.performDrag(with: event)
+                window.performDrag(with: event)
             }
         }
     }
 
-    func makeNSView(context: Context) -> NSView { DragView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func makeNSView(context: Context) -> DragView {
+        let view = DragView()
+        view.onClick = onClick
+        return view
+    }
+
+    func updateNSView(_ nsView: DragView, context: Context) {
+        nsView.onClick = onClick
+    }
 }
 
 /// A column edge you can drag to resize; double-click restores the default width.

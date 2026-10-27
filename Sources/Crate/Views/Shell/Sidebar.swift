@@ -6,15 +6,22 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Traffic lights live in this strip; it and the logo row move the window.
+            // Traffic lights live in this strip; it and the logo row move the window, and
+            // clicking the logo goes home.
             VStack(spacing: 0) {
                 Color.clear.frame(height: 30)
-                HStack(spacing: 9) {
-                    CrateMark(size: 26)
-                    Wordmark(size: 22)
+                HStack(spacing: 0) {
+                    // The mark and wordmark let clicks through to the drag area behind them.
+                    HStack(spacing: 9) {
+                        CrateMark(size: 26)
+                        Wordmark(size: 22)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(maxHeight: .infinity)
+                    .allowsHitTesting(false)
+                    .background(WindowDragArea { app.nav.go(.home) })
                     Spacer()
                 }
-                .padding(.horizontal, 10)
                 .frame(height: 40)
             }
             .background(WindowDragArea())
