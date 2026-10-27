@@ -108,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        ScrollActivity.shared.start()
         // Space and ⌘-arrows control playback unless a text field is being edited. These
         // aren't menu shortcuts because those would steal the keys from text fields.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in

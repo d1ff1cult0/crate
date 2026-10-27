@@ -806,6 +806,118 @@ struct Wordmark: View {
 
 // MARK: - Hover helpers
 
+/// Knows whether a scroll is in flight, from the app's scroll-wheel events (trackpad
+/// momentum included).
+///
+/// Scrolling with the pointer over a list moves a new row under it every few frames. If
+/// each of those rows lit up and built its hover controls, the list would be laid out
+/// again dozens of times a second and scrolling would stutter. So rows ignore the pointer
+/// while a scroll is in flight (`rowHover`), and the row that ends up under it lights up
+/// once scrolling stops, like in Finder and Music.
+@MainActor
+final class ScrollActivity {
+    static let shared = ScrollActivity()
+    private(set) var isScrolling = false
+    private var monitor: Any?
+    private var endTimer: Timer?
+    private var pending: (token: HoverToken, apply: () -> Void)?
+
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            MainActor.assumeIsolated { ScrollActivity.shared.noteScroll() }
+            return event
+        }
+    }
+
+    func noteScroll() {
+        isScrolling = true
+        // Long enough to bridge the gap between a trackpad swipe and its momentum, and the
+        // short animation AppKit runs after a mouse-wheel click.
+        let end = Date(timeIntervalSinceNow: 0.15)
+        if let endTimer {
+            endTimer.fireDate = end
+        } else {
+            let timer = Timer(fire: end, interval: 0, repeats: false) { _ in
+                MainActor.assumeIsolated { ScrollActivity.shared.finish() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            endTimer = timer
+        }
+    }
+
+    private func finish() {
+        isScrolling = false
+        endTimer = nil
+        let apply = pending?.apply
+        pending = nil
+        apply?()
+    }
+
+    /// The pointer entered a row mid-scroll: light it up when scrolling stops, unless the
+    /// pointer has left it (or entered another) by then.
+    fileprivate func deferHover(_ token: HoverToken, apply: @escaping () -> Void) {
+        pending = (token, apply)
+    }
+
+    fileprivate func cancelHover(_ token: HoverToken) {
+        if pending?.token === token { pending = nil }
+    }
+}
+
+private final class HoverToken {}
+
+private struct RowHover: ViewModifier {
+    @Binding var hovering: Bool
+    @State private var token = HoverToken()
+
+    func body(content: Content) -> some View {
+        content.onHover { inside in
+            let activity = ScrollActivity.shared
+            if inside, activity.isScrolling {
+                activity.deferHover(token) { hovering = true }
+            } else {
+                activity.cancelHover(token)
+                if hovering != inside { hovering = inside }
+            }
+        }
+    }
+}
+
+/// Lays out a row at the full proposed width and a fixed height without measuring its
+/// contents. Lazy stacks measure their rows to place them; with a plain `.frame(height:)`
+/// that means laying out every label of every visible row again whenever one row changes
+/// (a hover, a rating), which is what made long lists stutter.
+struct FixedRowLayout: Layout {
+    var height: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        if let width = proposal.width, width.isFinite { return CGSize(width: width, height: height) }
+        let ideal = subviews.first?.sizeThatFits(ProposedViewSize(width: nil, height: height)).width ?? 0
+        return CGSize(width: ideal, height: height)
+    }
+
+    /// Contents sit centred vertically, like in `.frame(height:)`.
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
+extension View {
+    /// `onHover` for rows and cards in scrolling lists: the pointer is ignored while a
+    /// scroll is in flight (see `ScrollActivity`).
+    func rowHover(_ hovering: Binding<Bool>) -> some View {
+        modifier(RowHover(hovering: hovering))
+    }
+
+    /// A list row with a known size (see `FixedRowLayout`).
+    func fixedRow(height: CGFloat) -> some View {
+        FixedRowLayout(height: height) { self }
+    }
+}
+
 struct HoverBackground: ViewModifier {
     var radius: CGFloat = Radius.control
     var color: Color = Tok.surfaceHover

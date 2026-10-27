@@ -149,7 +149,7 @@ struct PlaylistCard: View {
             .frame(width: size, alignment: .leading)
         }
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .animation(Motion.fast, value: hovering)
         .onTapGesture { app.nav.go(.playlist(playlist.id)) }
         .contextMenu { PlaylistMenuItems(playlist: playlist) }

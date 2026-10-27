@@ -144,6 +144,9 @@ enum ScrollBenchmark {
             cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
             cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
             guard let event = NSEvent(cgEvent: cg) else { return }
+            // Real scroll events reach `ScrollActivity` through its event monitor, which
+            // events handed straight to the window skip.
+            ScrollActivity.shared.noteScroll()
             window.sendEvent(event)
         }
 

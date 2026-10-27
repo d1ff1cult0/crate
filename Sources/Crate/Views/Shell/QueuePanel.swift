@@ -175,13 +175,13 @@ private struct QueueRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .frame(height: 50)
+        .fixedRow(height: 50)
         .background(
             RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
                 .fill(hovering ? Tok.surfaceHover : .clear)
         )
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .onTapGesture(count: 2) {
             if !isCurrent { app.player.jump(to: item.id) }
         }

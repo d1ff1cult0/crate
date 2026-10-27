@@ -216,14 +216,14 @@ struct TrackRow: View {
             .frame(width: 24)
         }
         .padding(.horizontal, 12)
-        .frame(height: rowHeight)
+        .fixedRow(height: rowHeight)
         .background(
             RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
                 .fill(isSelected ? Tok.surfaceSelected : (hovering ? Tok.surfaceHover : .clear))
         )
         .opacity(playable ? 1 : 0.42)
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .gesture(TapGesture(count: 2).onEnded { if playable { onPlay() } })
         .simultaneousGesture(TapGesture().onEnded { onSelect() })
         .contextMenu { menu() }

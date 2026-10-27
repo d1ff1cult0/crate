@@ -163,10 +163,10 @@ struct PlaylistRow: View {
             .opacity(hovering ? 1 : 0)
         }
         .padding(.horizontal, 12)
-        .frame(height: 60)
+        .fixedRow(height: 60)
         .background(RoundedRectangle(cornerRadius: Radius.control, style: .continuous).fill(hovering ? Tok.surfaceHover : .clear))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .onTapGesture { app.nav.go(.playlist(playlist.id)) }
         .contextMenu { PlaylistMenuItems(playlist: playlist) }
     }

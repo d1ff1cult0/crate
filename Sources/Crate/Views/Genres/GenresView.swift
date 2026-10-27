@@ -80,7 +80,7 @@ private struct GenreTile: View {
         .background(hue.bg, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(hue.border, lineWidth: 1))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .animation(Motion.fast, value: hovering)
         .onTapGesture { app.nav.go(.genre(genre.name)) }
         .contextMenu {

@@ -31,7 +31,7 @@ struct AlbumCard: View {
             .frame(width: size, alignment: .leading)
         }
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .animation(Motion.fast, value: hovering)
         .onTapGesture { app.nav.go(.album(album.id)) }
         .contextMenu { AlbumMenuItems(album: album) }
@@ -129,7 +129,7 @@ struct MixCard: View {
             .frame(width: size, alignment: .leading)
         }
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .rowHover($hovering)
         .animation(Motion.fast, value: hovering)
         .onTapGesture { app.nav.go(.mix(mix.id)) }
     }
