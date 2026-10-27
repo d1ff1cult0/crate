@@ -74,34 +74,41 @@ struct MainShell: View {
 struct MainPanel: View {
     @Environment(AppModel.self) private var app
     @State private var pageTitle: String?
+    private static let minPageWidth: CGFloat = 400
 
     var body: some View {
         @Bindable var settings = app.settings
         VStack(spacing: 0) {
             PanelHeader(pageTitle: app.nav.stack.isEmpty ? nil : pageTitle)
             Hairline()
-            ZStack(alignment: .trailing) {
-                PageContainer()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if app.showLyrics {
-                    LyricsView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Tok.surface)
-                        .transition(.opacity)
-                }
-                if app.showQueue {
-                    QueuePanel()
-                        .frame(width: settings.queueWidth)
-                        .frame(maxHeight: .infinity)
-                        .background(Tok.surface)
-                        .overlay(alignment: .leading) { Hairline(vertical: true) }
-                        .overlay(alignment: .leading) {
-                            ResizeHandle(width: $settings.queueWidth, range: SettingsStore.queueRange,
-                                         defaultWidth: SettingsStore.defaultQueueWidth, edge: .leading)
-                                .offset(x: -4)
+            // The queue is a column beside the page, so pages get narrower instead of
+            // disappearing under it. It only gets narrower than its set width when the
+            // window can't fit both.
+            GeometryReader { proxy in
+                HStack(spacing: 0) {
+                    ZStack {
+                        PageContainer()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if app.showLyrics {
+                            LyricsView()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Tok.surface)
+                                .transition(.opacity)
                         }
-                        .shadow(color: .black.opacity(0.08), radius: 16, x: -6, y: 0)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                    if app.showQueue {
+                        QueuePanel()
+                            .frame(width: min(settings.queueWidth, max(240, proxy.size.width - Self.minPageWidth)))
+                            .frame(maxHeight: .infinity)
+                            .background(Tok.surface)
+                            .overlay(alignment: .leading) { Hairline(vertical: true) }
+                            .overlay(alignment: .leading) {
+                                ResizeHandle(width: $settings.queueWidth, range: SettingsStore.queueRange,
+                                             defaultWidth: SettingsStore.defaultQueueWidth, edge: .leading)
+                                    .offset(x: -4)
+                            }
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
                 }
             }
             .clipped()
