@@ -51,8 +51,16 @@ struct TrackRows: View {
             )
             .onAppear {
                 if index == tracks.count - 40 || (tracks.count < 40 && index == tracks.count - 1) { onReachEnd?() }
+                if index % 25 == 0 { warmCovers(from: index) }
             }
         }
+    }
+
+    /// Decodes the covers of the next rows in the background (see `ImageCache.warm`).
+    private func warmCovers(from index: Int) {
+        guard options.artwork, index < tracks.count else { return }
+        let ahead = tracks[index..<min(index + 75, tracks.count)]
+        ImageCache.shared.warm(ahead.map { (app.library.cover(for: $0), $0.artworkURL) }, points: app.settings.compactRows ? 32 : 36)
     }
 
     private func play(_ index: Int) {

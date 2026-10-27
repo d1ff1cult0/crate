@@ -17,6 +17,7 @@ final class ImageCache: @unchecked Sendable {
     private let memory = NSCache<NSString, NSImage>()
     private let lock = NSLock()
     private var inFlight: [String: Task<NSImage?, Never>] = [:]
+    private var warmTask: Task<Void, Never>?
     /// Covers known not to be on disk yet (keyed by `keyFor(0)`), so the synchronous
     /// thumbnail path costs a set lookup instead of file reads on every view init.
     private var notOnDisk: Set<String> = []
@@ -93,6 +94,27 @@ final class ImageCache: @unchecked Sendable {
         }
         memory.setObject(image, forKey: keyFor(size) as NSString, cost: size * size * 4)
         return image
+    }
+
+    /// Decodes the thumbnails of the rows about to scroll into view, off the main thread,
+    /// so those rows find them in memory instead of decoding them while the list moves.
+    /// A newer request replaces an unfinished one.
+    func warm(_ covers: [(coverArt: String?, url: URL?)], points: CGFloat) {
+        var seen = Set<String>()
+        let missing = covers.filter { cover in
+            guard let keyFor = keyBuilder(coverArt: cover.coverArt, url: cover.url), seen.insert(keyFor(0)).inserted else { return false }
+            return memory.object(forKey: keyFor(Self.bucket(for: points)) as NSString) == nil
+        }
+        guard !missing.isEmpty else { return }
+        lock.withLock {
+            warmTask?.cancel()
+            warmTask = Task.detached(priority: .userInitiated) { [self] in
+                for cover in missing {
+                    if Task.isCancelled { return }
+                    _ = diskImageSync(coverArt: cover.coverArt, url: cover.url, points: points)
+                }
+            }
+        }
     }
 
     /// The exact bucket, or any larger one already on disk (scaled down on decode).
