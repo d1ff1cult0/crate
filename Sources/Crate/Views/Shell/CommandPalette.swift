@@ -127,6 +127,15 @@ struct CommandPalette: View {
             focused = true
             selected = 0
         }
+        .task {
+            // When the palette appears its field isn't always in the window yet, and then
+            // the focus request is dropped and you'd have to click before typing. Asking
+            // again once it's there is harmless when the first request did work.
+            for delay in [0, 50, 150] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                focused = true
+            }
+        }
         .onChange(of: app.paletteQuery) { selected = 0 }
     }
 

@@ -208,7 +208,7 @@ struct SettingsView: View {
                         shortcut("Volume up / down", "⌘↑  ⌘↓")
                         shortcut("Rate the current song", "⌘1 – ⌘5, ⌘0 clears")
                         shortcut("Favourite the current song", "⌘L")
-                        shortcut("Jump to anything", "⌘K")
+                        shortcut("Jump to anything", "⌘K or ⌃K")
                         shortcut("Queue", "⌘U")
                         shortcut("Back / forward", "⌘[  ⌘]")
                     }

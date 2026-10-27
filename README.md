@@ -139,10 +139,11 @@ make run        # fast arm64 build of dist/Crate.app, then open it
 | Volume                         | <kbd>⌘</kbd> <kbd>↑</kbd> / <kbd>⌘</kbd> <kbd>↓</kbd> |
 | Rate the current song          | <kbd>⌘</kbd> <kbd>1</kbd> … <kbd>⌘</kbd> <kbd>5</kbd>, <kbd>⌘</kbd> <kbd>0</kbd> clears |
 | Favourite the current song     | <kbd>⌘</kbd> <kbd>L</kbd>     |
-| Jump to anything               | <kbd>⌘</kbd> <kbd>K</kbd>     |
+| Jump to anything               | <kbd>⌘</kbd> <kbd>K</kbd> or <kbd>⌃</kbd> <kbd>K</kbd> |
 | Find a playlist                | <kbd>⌘</kbd> <kbd>F</kbd> on Playlists |
 | Queue / lyrics                 | <kbd>⌘</kbd> <kbd>U</kbd> / <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>L</kbd> |
 | Back / forward                 | <kbd>⌘</kbd> <kbd>[</kbd> / <kbd>⌘</kbd> <kbd>]</kbd> |
+| Leave a text field             | <kbd>Esc</kbd>, or click anywhere else |
 
 ## FAQ
 

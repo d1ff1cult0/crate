@@ -105,6 +105,7 @@ struct CrateCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var model: AppModel?
     private var keyMonitor: Any?
+    private var clickMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -112,20 +113,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Space and ⌘-arrows control playback unless a text field is being edited. These
         // aren't menu shortcuts because those would steal the keys from text fields.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let keyCode = event.keyCode
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
-            let handled = MainActor.assumeIsolated { AppDelegate.handleKey(keyCode, flags) }
+            let handled = MainActor.assumeIsolated { AppDelegate.handleKey(event) }
             return handled ? nil : event
+        }
+        // A text field keeps the keyboard until something else takes it, and the rows and
+        // buttons here never do, so after typing in a filter Space kept typing spaces into
+        // it. A click anywhere outside a text field ends the editing, like in a browser.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            MainActor.assumeIsolated { AppDelegate.endTextEditing(unlessClickIsIn: event) }
+            return event
         }
     }
 
-    /// Returns true when the key press was used for playback.
-    private static func handleKey(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) -> Bool {
-        guard let model = AppDelegate.model, model.phase == .ready else { return false }
-        if let responder = NSApp.keyWindow?.firstResponder, responder is NSText || responder is NSTextView {
-            return false
+    private static var isEditingText: Bool {
+        NSApp.keyWindow?.firstResponder is NSText
+    }
+
+    private static func endTextEditing(unlessClickIsIn event: NSEvent) {
+        guard let window = event.window, window.firstResponder is NSText, model?.showPalette != true,
+              let content = window.contentView else { return }
+        var view = content.hitTest(event.locationInWindow)
+        while let current = view {
+            if current is NSTextField || current is NSText { return }
+            view = current.superview
         }
-        switch (keyCode, flags) {
+        window.makeFirstResponder(nil)
+    }
+
+    /// Returns true when the key press was handled here.
+    private static func handleKey(_ event: NSEvent) -> Bool {
+        // Sheets (the playlist name prompt) keep their own keys, Esc included.
+        guard let model = AppDelegate.model, model.phase == .ready, NSApp.keyWindow?.sheetParent == nil else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
+        // Ctrl-K opens the palette like ⌘K (the menu item can only carry one shortcut).
+        if flags == [.control], event.charactersIgnoringModifiers?.lowercased() == "k" {
+            model.paletteQuery = ""
+            model.showPalette = true
+            return true
+        }
+        if isEditingText {
+            // Esc leaves a text field (the palette handles its own).
+            guard event.keyCode == 53, flags.isEmpty, !model.showPalette else { return false }
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            return true
+        }
+        switch (event.keyCode, flags) {
         case (49, []):
             if model.showPalette { return false }
             model.player.togglePlayPause()
