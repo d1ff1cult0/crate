@@ -31,6 +31,13 @@ user installed 1.0.0: smooth scrolling in mixes (it was laggy), a purple dot ins
 The user also asked that their installed `/Applications/Crate.app` be updated when work
 is done (`scripts/install.sh`). The user writes in English and sometimes in Dutch.
 
+Second session (2026-10-27): scrolling was **still** not smooth for the user although the
+1.1 benchmark said it was (see "Measuring smoothness" for why), Space didn't pause after
+typing in a field, ⌘K / Ctrl-K should be ready to type, Settings didn't resize with the
+queue open (the queue now sits beside the page), and the logo should go home. The user
+was (rightly) frustrated that scrolling a list still dropped frames: the bar is **zero
+dropped frames**, measured the way a person scrolls, not "a few percent".
+
 ## Hard rules
 
 - **No AI attribution** in commits, tags or PRs: no `Co-Authored-By`, no "Generated with
@@ -82,6 +89,13 @@ is done (`scripts/install.sh`). The user writes in English and sometimes in Dutc
   and `volume -float 0`.
 - A bare `.build/debug/Crate` launched from a shell creates its window off-screen. Always
   build the bundle and launch it with `open`.
+- **Without the user's password**: run a stand-in server that answers every request with
+  HTTP 500 (`python3 -c` with `http.server`, e.g. on port 4599) and launch with
+  `--env CRATE_SERVER=http://127.0.0.1:4599 --env CRATE_USER=<u> --env CRATE_PASSWORD=x`.
+  A 500 isn't a connectivity error, so the app stays "online" (rows aren't dimmed as
+  unplayable) and renders everything from the cache. Seed the account folder
+  `<u>@127.0.0.1-4599` (and the artwork folder of the same name) as above. Playback fails,
+  which is fine for UI work.
 - Test credentials without touching stored secrets:
   `open -n "dist/Crate Dev.app" --env CRATE_SERVER=<host> --env CRATE_USER=<u> --env CRATE_PASSWORD=<p>`
   (`AppModel.launch()` checks these first). `--env CRATE_DISPLAY_HOST=music.example.com`
@@ -92,10 +106,31 @@ is done (`scripts/install.sh`). The user writes in English and sometimes in Dutc
   `offline/playlist/<id>`, `offline/favourites`, `theme/light|dark|system`, and in dev builds
   `debug/scroll` (below).
 - **Measuring smoothness:** `crate-dev://debug/scroll` (`ScrollBenchmark`, dev only) scrolls
-  the current page's largest scroll view at 120 Hz and writes frame pacing to
-  `~/Library/Caches/Crate Dev/scroll-benchmark.txt` (healthy: mean ≈ 8.3 ms, no frames
-  > 25 ms). Run `sample <pid> 4 -file out.txt` at the same time to see main-thread hot spots.
-  Posting scroll events with `CGEvent.postToPid` does not reach the window; don't bother.
+  the scroll view under the middle of the page with synthetic trackpad events while the
+  pointer rests over the list, timed on the display refresh (this Mac is 60 Hz), and
+  appends a line to `~/Library/Caches/Crate Dev/scroll-benchmark.txt` with missed frames
+  and when the long ones happened. `?input=clip` moves the clip view instead (no events, no
+  hover), `?input=hover` moves the pointer over rows without scrolling, `?pointer=0`,
+  `?speed=` (pt/s, default 1500), `?seconds=`. Healthy is **0 missed** in steady state.
+  Lessons from getting this wrong:
+  - The 1.1 benchmark picked "the largest scroll view", which on a detail page was the
+    **hidden root page** kept mounted under it (SwiftUI opacity 0 is invisible to AppKit),
+    and it scrolled without a pointer, so it never saw hover. It reported smooth while
+    the user's real scrolling dropped 25–54% of frames.
+  - Hover changes need the dev app to be **active**; run with `open` (not `-g`) when
+    measuring hover, and expect the user's real cursor to interfere. Results vary run to
+    run; repeat 3–4 times and check `uptime` (background system jobs push the load to 15+
+    and cause misses that aren't Crate's).
+  - `sample` slows the app a lot: use it to see *where* time goes, never for frame counts.
+  - `screencapture -v` recordings drop ~30% of frames by themselves (a trivial Core
+    Animation control did too), so frame gaps in a recording prove nothing. Measuring how
+    far the content moves per recorded frame does tell something (big jumps then still
+    frames = the main thread falling behind).
+  - `CGEvent.postToPid` delivers key events (when the app is active) but not mouse or
+    scroll events. In-app, `window.sendEvent` works for clicks; an inactive window
+    swallows the first click unless the view accepts first mouse.
+  - **Don't activate the dev app while the user works**: their keystrokes land in it (a
+    Space started playback there once). Use `open -g`, keep bursts short.
   Check idle CPU while playing too (`ps -o %cpu= -p <pid>`); it should be a few percent.
 - Screenshots: get the window id from `CGWindowListCopyWindowInfo` (owner "Crate", layer 0,
   on-screen), then `screencapture -x -o -l <id> out.png`. If the user hides the window or
@@ -190,6 +225,21 @@ Sources/Crate/
   - Rows only build hover controls (play, stars, heart, "…" menu) while hovered or when they
     carry a value. `RemoteFetcher.cachedFile` is a dictionary lookup (use `validFile` right
     before playback); `ImageCache.diskImageSync` remembers covers that aren't on disk.
+  - **Rows in scrolling lists use `.rowHover($hovering)`, not `.onHover`**, and **fixed
+    rows use `.fixedRow(height:)`, not `.frame(height:)`** (`Components.swift`). With the
+    pointer over a list, a new row passes under it every few frames; each hover change
+    rebuilt that row, and because rows were sized by `.frame(height:)` the `LazyVStack`
+    re-measured every visible row (all their text) to place them. That was the 1.1
+    stutter. `ScrollActivity` watches scroll-wheel events and holds hover until a scroll
+    has stopped; `FixedRowLayout` reports width × height without measuring its contents.
+  - Covers for rows about to appear are decoded off the main thread (`ImageCache.warm`,
+    triggered every 25 rows from `TrackRows`); a synchronous decode is ~1.3 ms per row.
+  - Known remaining cost (~1 ms/frame while scrolling): with `.hiddenTitleBar`, SwiftUI's
+    `WindowDragPreventionContentPathObserver` asks AppKit to recompute the title-bar drag
+    area whenever any shape moves, and that walks the whole focus tree
+    (`NSHostingView.acceptsFirstResponder`). The default window style plus a manual
+    transparent title bar didn't avoid it; `allowsHitTesting(false)` on decorative shapes
+    didn't either.
   - **Continuous animation goes through Core Animation**, not SwiftUI: `NowPlayingBars` is
     an `NSViewRepresentable` with CALayer animations. The SwiftUI `TimelineView` version kept
     the view graph busy 24×/s and the app at ~35% CPU while playing; now it's ~2.5%.
@@ -321,3 +371,4 @@ visible in their library.
   together in the user's playlists) as an extra autoplay signal.
 - Finder layout for the DMG without AppleScript (write `.DS_Store` directly).
 - Developer ID signing and notarisation if the app is ever shared.
+- Load Songs pages off the main thread (each `loadMore` is a 400-row SQLite query on it).
