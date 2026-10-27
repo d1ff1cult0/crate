@@ -387,7 +387,10 @@ final class AppModel {
             paletteQuery = query
             showPalette = true
         case "debug":
-            if first == "scroll" { ScrollBenchmark.run() }
+            if first == "scroll" {
+                let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                ScrollBenchmark.run(query: Dictionary(items.map { ($0.name, $0.value ?? "") }) { $1 })
+            }
         case "queue": showQueue.toggle()
         case "lyrics": showLyrics.toggle()
         case "pin": library.togglePin(first)
